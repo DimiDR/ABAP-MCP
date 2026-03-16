@@ -70,54 +70,72 @@ Dann Claude Desktop neu starten — der Server läuft im Hintergrund sobald du e
 }
 ```
 
+**Cline** (VS Code Extension):
 
+In VS Code öffne die Cline Settings (Cline-Symbol → Settings) und gehe zu "MCP Server Configuration". Dort ergänze:
 
-
-1. Port
-
-  Der Server läuft auf keinem Port. Er nutzt StdioServerTransport (Zeile 30 in src/index.ts), d.h. er
-   kommuniziert über stdin/stdout — nicht über HTTP/TCP. Das ist das Standard-Protokoll für
-  MCP-Server.
-
-  2. In Claude Code anbinden
-
-  Erstelle/bearbeite die Datei ~/.claude/settings.json (oder die projektlokale .claude/settings.json)
-   und füge den Server hinzu:
-
-  {
-    "mcpServers": {
-      "abap": {
-        "command": "node",
-        "args": ["C:/Users/rybak/Downloads/Apps/ABAP_MCP/dist/index.js"],
-        "env": {
-          "SAP_URL": "https://ihr-sap-system:44300",
-          "SAP_USER": "DEVELOPER",
-          "SAP_PASSWORD": "IhrPasswort",
-          "SAP_CLIENT": "100",
-          "SAP_LANGUAGE": "DE",
-          "ALLOW_WRITE": "false"
-        }
-      }
+```json
+{
+  "mcpServers": {
+    "abap": {
+      "command": "node",
+      "args": ["C:\\Users\\rybak\\Downloads\\Apps\\ABAP_MCP\\dist\\index.js"],
+      "cwd": "C:\\Users\\rybak\\Downloads\\Apps\\ABAP_MCP",
+      "disabled": false,
+      "autoApprove": []
     }
   }
+}
+```
 
-  Alternativ, wenn du die .env-Datei nutzen willst (die liegt ja schon vor), kannst du statt node    
-  auch npx tsx verwenden:
+**Wichtig:** Das `cwd`-Feld ist notwendig, damit der Server die `.env`-Datei aus dem richtigen Verzeichnis lädt. Ohne `cwd` schlägt der Start mit "SAP_URL, SAP_USER and SAP_PASSWORD must be set" fehl.
 
-  {
-    "mcpServers": {
-      "abap": {
-        "command": "npx",
-        "args": ["tsx", "C:/Users/rybak/Downloads/Apps/ABAP_MCP/src/index.ts"],
-        "cwd": "C:/Users/rybak/Downloads/Apps/ABAP_MCP"
-      }
-    }
-  }
+Nach dem Speichern: Cline neu starten oder die MCP-Verbindung neu laden.
 
-  Mit cwd gesetzt wird die .env-Datei automatisch von dotenv geladen.
+---
 
-  Schritte:
-  1. Erst .env mit deinen echten SAP-Zugangsdaten ausfüllen
-  2. npm run build ausführen (oder npm run dev für Entwicklung)
-  3. Die obige Konfiguration in ~/.claude/settings.json eintragen
-  4. Claude Code neu starten — die ABAP-Tools sollten dann verfügbar sein
+## Warum braucht der Server keinen Port?
+
+Der ABAP MCP Server läuft im **stdio-Modus** (Standard Input/Output), nicht im HTTP-Modus:
+
+- **stdio-Modus** (dieser Server) ✅
+  - Der Server kommuniziert über stdin/stdout direkt mit dem Client
+  - Kein HTTP-Server, kein TCP-Port nötig
+  - Das ist der Standard für MCP (Model Context Protocol)
+  - Wird vom Client automatisch gestartet, wenn benötigt
+  - Perfekt für: Claude Desktop, Claude Code, Cline
+
+- **HTTP-Modus** (optional, z.B. für externe Clients)
+  - Server lauscht auf TCP-Port (z.B. 4847)
+  - Clients verbinden sich via HTTP
+  - Nötig wenn du mehrere Client-Prozesse hast oder externe Integration brauchst
+
+**Kurz:** Du brauchst keinen Port, weil dein Client (Claude, Cline) den Server direkt startet und über stdio mit ihm spricht. Das ist schneller und sicherer.
+
+---
+
+## Credentials konfigurieren
+
+Der Server lädt die Credentials aus der `.env`-Datei im Projekt:
+
+```bash
+SAP_URL=https://dein-sap-system:44300
+SAP_USER=DEVELOPER
+SAP_PASSWORD=deinPasswort
+SAP_CLIENT=100
+SAP_LANGUAGE=DE
+ALLOW_WRITE=true
+```
+
+Du brauchst die Credentials **nicht** in der MCP-Config zu wiederholen — der Server lädt sie automatisch beim Start.
+
+## Troubleshooting
+
+**"ADT Fehler: User ist currently editing..."**
+- Der Server versucht, eine Datei zu sperren, die schon gesperrt ist (z.B. von einem vorherigen Fehler)
+- Lösung: SAP Studio öffnen und die Lock-Session beenden, oder Server neu starten
+
+**Include-Aktivierungsfehler**
+- Includes können nicht standalone aktiviert werden
+- Der Server erkennt das automatisch und aktiviert die Include im Kontext des Hauptprogramms
+- Falls nötig, `mainProgram`-Parameter beim Schreiben angeben
