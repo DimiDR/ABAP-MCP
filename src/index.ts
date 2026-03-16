@@ -2566,8 +2566,8 @@ async function main() {
   const eIcon  = cfg.allowExecute ? "✅ aktiv" : "❌ deaktiviert";
   if (cfg.allowWrite) {
     console.error(`  Blocked : ${cfg.blockedPackages.join(", ") || "keine"}`);
+    console.error(`  Execute : ${eIcon}`);
   }
-  console.error(`  Execute : ${eIcon}`);
   const tIcon  = cfg.deferTools ? `${CORE_TOOL_NAMES.size} initial (${ALL_TOOLS.length} gesamt, deferred)` : `${ALL_TOOLS.length} registriert`;
   console.error(`  Tools   : ${tIcon}`);
   console.error(`  Doku    : help.sap.com v${cfg.sapAbapVersion}`);
