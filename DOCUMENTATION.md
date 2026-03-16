@@ -99,7 +99,7 @@ Die SAP-Verbindung wird einmalig beim Start aufgebaut (Lazy Init) und dann wiede
 ### Installation
 
 ```bash
-git clone https://github.com/your-org/abap-mcp-server
+git clone <REPOSITORY_URL>
 cd abap-mcp-server
 npm install
 npm run build
@@ -144,15 +144,15 @@ cp .env.example .env
 ### Beispiel .env (Entwicklungssystem)
 
 ```env
-SAP_URL=https://s4dev.example.com:44300
-SAP_USER=DEVELOPER
-SAP_PASSWORD=DevPass123!
-SAP_CLIENT=100
-SAP_LANGUAGE=DE
+SAP_URL=https://<SAP_SYSTEM>:<PORT>
+SAP_USER=<USERNAME>
+SAP_PASSWORD=<PASSWORD>
+SAP_CLIENT=<CLIENT>
+SAP_LANGUAGE=<LANGUAGE>
 ALLOW_WRITE=true
 ALLOW_DELETE=false
 BLOCKED_PACKAGES=SAP,SHD,SMOD
-DEFAULT_TRANSPORT=DEVK900042
+DEFAULT_TRANSPORT=<TRANSPORT_ID>
 MAX_DUMPS=50
 ```
 
@@ -172,10 +172,10 @@ MAX_DUMPS=50
       "command": "node",
       "args": ["/pfad/zum/abap-mcp-server/dist/index.js"],
       "env": {
-        "SAP_URL": "https://dev-system:44300",
-        "SAP_USER": "DEVELOPER",
-        "SAP_PASSWORD": "Password",
-        "SAP_CLIENT": "100",
+        "SAP_URL": "https://<SAP_SYSTEM>:<PORT>",
+        "SAP_USER": "<USERNAME>",
+        "SAP_PASSWORD": "<PASSWORD>",
+        "SAP_CLIENT": "<CLIENT>",
         "ALLOW_WRITE": "true"
       }
     }
@@ -204,7 +204,7 @@ MAX_DUMPS=50
   "mcpServers": {
     "abap": {
       "command": "node",
-      "args": ["/pfad/zum/abap-mcp-server/dist/index.js"]
+      "args": ["<path/to/abap-mcp-server>/dist/index.js"]
     }
   }
 }
@@ -822,5 +822,5 @@ Quellcode einer Einheit lesen/schreiben: URL + `/source/main`
 
 ---
 
-*Letzte Aktualisierung: März 2026*  
+*Letzte Aktualisierung: [Aktuelle Version]*
 *Basiert auf: abap-adt-api v8.x, @modelcontextprotocol/sdk v1.x*

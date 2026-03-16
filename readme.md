@@ -25,8 +25,8 @@ Wenn alles klappt, siehst du:
 ╔══════════════════════════════════════════╗
 ║   ABAP MCP Server v2.0 — Extended        ║
 ╚══════════════════════════════════════════╝
-  System  : https://ihr-sap-system:44300
-  User    : DEVELOPER  Client: 100
+  System  : https://<SAP_SYSTEM>:<PORT>
+  User    : <USERNAME>  Client: <CLIENT>
   Write   : ❌ deaktiviert
   Tools   : 30 registriert
   ADT     : ✅ Verbunden
@@ -43,12 +43,12 @@ Wenn alles klappt, siehst du:
   "mcpServers": {
     "abap": {
       "command": "node",
-      "args": ["C:/pfad/zu/abap-mcp-server-v2/dist/index.js"],
+      "args": ["/pfad/zum/abap-mcp-server/dist/index.js"],
       "env": {
-        "SAP_URL": "https://ihr-dev-system:44300",
-        "SAP_USER": "DEVELOPER",
-        "SAP_PASSWORD": "IhrPasswort",
-        "SAP_CLIENT": "100",
+        "SAP_URL": "https://<SAP_SYSTEM>:<PORT>",
+        "SAP_USER": "<USERNAME>",
+        "SAP_PASSWORD": "<PASSWORD>",
+        "SAP_CLIENT": "<CLIENT>",
         "ALLOW_WRITE": "true"
       }
     }
@@ -64,7 +64,7 @@ Dann Claude Desktop neu starten — der Server läuft im Hintergrund sobald du e
   "mcpServers": {
     "abap": {
       "command": "node",
-      "args": ["C:/pfad/zu/abap-mcp-server-v2/dist/index.js"]
+      "args": ["/pfad/zum/abap-mcp-server/dist/index.js"]
     }
   }
 }
@@ -79,8 +79,8 @@ In VS Code öffne die Cline Settings (Cline-Symbol → Settings) und gehe zu "MC
   "mcpServers": {
     "abap": {
       "command": "node",
-      "args": ["C:\\Users\\rybak\\Downloads\\Apps\\ABAP_MCP\\dist\\index.js"],
-      "cwd": "C:\\Users\\rybak\\Downloads\\Apps\\ABAP_MCP",
+      "args": ["/pfad/zum/abap-mcp-server/dist/index.js"],
+      "cwd": "/pfad/zum/abap-mcp-server",
       "disabled": false,
       "autoApprove": []
     }
@@ -119,12 +119,12 @@ Der ABAP MCP Server läuft im **stdio-Modus** (Standard Input/Output), nicht im 
 Der Server lädt die Credentials aus der `.env`-Datei im Projekt:
 
 ```bash
-SAP_URL=https://dein-sap-system:44300
-SAP_USER=DEVELOPER
-SAP_PASSWORD=deinPasswort
-SAP_CLIENT=100
-SAP_LANGUAGE=DE
-ALLOW_WRITE=true
+SAP_URL=https://<SAP_SYSTEM>:<PORT>
+SAP_USER=<USERNAME>
+SAP_PASSWORD=<PASSWORD>
+SAP_CLIENT=<CLIENT>
+SAP_LANGUAGE=<LANGUAGE>
+ALLOW_WRITE=<true|false>
 ```
 
 Du brauchst die Credentials **nicht** in der MCP-Config zu wiederholen — der Server lädt sie automatisch beim Start.

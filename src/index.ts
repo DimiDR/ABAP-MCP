@@ -32,6 +32,8 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -386,6 +388,13 @@ const S_GetTableContents = z.object({
   maxRows:   z.number().int().min(1).max(1000).default(100).optional().describe("Max. Anzahl Zeilen (Default: 100)"),
 });
 
+// --- CONTEXT ANALYSIS ---
+const S_AnalyzeContext = z.object({
+  objectUrl: z.string().describe("ADT-URL des Haupt-Objekts"),
+  depth: z.enum(["shallow", "deep"]).default("deep").optional()
+    .describe("shallow = nur Hauptquelle + direkte Includes; deep = rekursiv alle Referenzen"),
+});
+
 // ============================================================================
 // HELPER: Zod → JSON Schema (minimal inline converter)
 // ============================================================================
@@ -687,6 +696,11 @@ const TOOLS: ToolDef[] = [
   { name: "get_table_contents",
     description: "Liest Tabelleninhalte direkt aus einer DDIC-Tabelle. Gibt Daten als JSON zurück.",
     schema: S_GetTableContents },
+
+  // ── CONTEXT ANALYSIS ──────────────────────────────────────────────────
+  { name: "analyze_abap_context",
+    description: "Analysiert den vollständigen Kontext eines ABAP-Objekts: Liest Quellcode inkl. aller Includes, erkennt referenzierte Funktionsbausteine, Klassen und Interfaces per Regex, ruft deren Metadaten ab und liefert einen strukturierten Kontext-Report. Einstiegspunkt für den abap_develop Workflow.",
+    schema: S_AnalyzeContext },
 ];
 
 // ============================================================================
@@ -697,7 +711,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   SEARCH:      ["search_abap_objects"],
   READ:        ["read_abap_source", "get_object_info", "where_used", "get_code_completion",
                 "find_definition", "get_revisions", "get_ddic_element", "get_table_contents",
-                "get_fix_proposals"],
+                "get_fix_proposals", "analyze_abap_context"],
   WRITE:       ["write_abap_source", "activate_abap_object", "mass_activate", "pretty_print"],
   CREATE:      ["create_abap_program", "create_abap_class", "create_abap_interface",
                 "create_function_group", "create_cds_view", "create_database_table",
@@ -718,6 +732,7 @@ const CORE_TOOL_NAMES = new Set([
   "write_abap_source",
   "get_object_info",
   "where_used",
+  "analyze_abap_context",
 ]);
 
 const enabledTools = new Set<string>();
@@ -747,7 +762,7 @@ const ALL_TOOLS = [...TOOLS, FIND_TOOLS_ENTRY];
 
 const server = new Server(
   { name: "abap-mcp-server", version: "2.0.0" },
-  { capabilities: { tools: { listChanged: true } } }
+  { capabilities: { tools: { listChanged: true }, prompts: {} } }
 );
 
 // ── LIST TOOLS ──────────────────────────────────────────────────────────────
@@ -761,6 +776,86 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       description: t.description,
       inputSchema: toJsonSchema(t.schema),
     })),
+  };
+});
+
+// ── LIST PROMPTS ────────────────────────────────────────────────────────────
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: [{
+    name: "abap_develop",
+    description: "Intelligenter ABAP-Entwicklungsworkflow: Analysiert zuerst den vollständigen Kontext, wendet moderne ABAP-Prinzipien an.",
+    arguments: [
+      { name: "object_name", description: "Name des ABAP-Objekts (z.B. ZRYBAK_TEST)", required: true },
+      { name: "task", description: "Aufgabe (z.B. 'ALV-Grid mit CL_SALV_TABLE einbauen')", required: true },
+    ],
+  }],
+}));
+
+// ── GET PROMPT ──────────────────────────────────────────────────────────────
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  const { name, arguments: promptArgs } = request.params;
+  if (name !== "abap_develop")
+    throw new McpError(ErrorCode.InvalidRequest, `Unbekannter Prompt: ${name}`);
+
+  const objectName = promptArgs?.object_name ?? "";
+  const task = promptArgs?.task ?? "";
+
+  return {
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text:
+`Du bist ein erfahrener SAP ABAP-Entwickler. Deine Aufgabe: "${task}" am Objekt "${objectName}".
+
+## PFLICHT-WORKFLOW (Reihenfolge einhalten!)
+
+### Schritt 1: Vollständigen Kontext erfassen
+1. Führe \`search_abap_objects(query="${objectName}")\` aus, um die ADT-URL zu ermitteln.
+2. Führe \`analyze_abap_context(objectUrl=<url>, depth="deep")\` aus.
+3. Lies den Kontext-Report VOLLSTÄNDIG bevor du mit Schritt 2 weitermachst.
+   ⚠️ NIEMALS Code schreiben ohne vorher ALLE Includes und referenzierten Objekte gelesen zu haben!
+
+### Schritt 2: Referenzen & Alternativen recherchieren
+- Für jeden im Kontext gefundenen Funktionsbaustein: Prüfe ob es modernere Alternativen gibt.
+  Beispiele veralteter Patterns → moderne Alternativen:
+    • REUSE_ALV_GRID_DISPLAY → CL_SALV_TABLE / CL_GUI_ALV_GRID
+    • POPUP_TO_CONFIRM → IF_FPM_POPUP (bei FPM) oder eigene Klasse
+    • READ TABLE ... SY-SUBRC → Inline-Deklaration: READ TABLE ... INTO DATA(ls_row)
+    • CALL FUNCTION (ohne Ausnahmen) → TRY/CATCH mit CX_* Klassen
+    • WRITE / FORMAT → CL_SALV_TABLE oder Web Dynpro / Fiori
+- Nutze \`search_abap_objects\` und \`where_used\` um Alternativen im System zu finden.
+- Bei Unsicherheit: Suche in der SAP-Dokumentation (Web-Suche) nach Best Practices.
+
+### Schritt 3: Moderne ABAP-Prinzipien anwenden (Clean ABAP)
+Beim Coding folgende Prinzipien beachten:
+- **Inline-Deklarationen**: DATA(lv_var), FIELD-SYMBOL(<fs>), NEW #(), VALUE #()
+- **String Templates**: |Text { lv_var } mehr Text| statt CONCATENATE
+- **Funktionale Methoden**: COND #(), SWITCH #(), REDUCE #(), FILTER #()
+- **ABAP SQL**: SELECT ... INTO TABLE @DATA(lt_result) (Host-Variablen mit @)
+- **Ausnahmen**: CX_*-Klassen und TRY/CATCH statt SY-SUBRC-Prüfung
+- **OOP**: Klassen/Interfaces statt Funktionsbausteine für neue Logik
+- **Naming**: Clean ABAP Konventionen (keine ungarische Notation für neue Objekte,
+  aber bestehende Konventionen im Programm respektieren)
+- **Vermeidung**: MOVE, COMPUTE, obsolete Anweisungen (CHECK in Methoden → RETURN)
+- **Test-Freundlichkeit**: Abhängigkeiten über Interfaces injizieren
+
+### Schritt 4: Code-Platzierung bestimmen
+- Prüfe den Kontext-Report: In welchem Include/Klasse gehört der neue Code hin?
+- Bei Reports mit Includes: NIEMALS Code ins Hauptprogramm, wenn es ein passendes Include gibt!
+- Bei Klassen: Richtige Methode / richtiges Include wählen
+- Bei FuGr: Richtigen Funktionsbaustein identifizieren
+
+### Schritt 5: Implementierung
+- Schreibe den Code mit \`write_abap_source\`
+- Bei Syntax-/Aktivierungsfehlern: Analysiere, korrigiere, und versuche erneut
+- Führe nach der Implementierung \`run_syntax_check\` und ggf. \`run_unit_tests\` aus
+
+### Schritt 6: Qualitätsprüfung
+- Führe \`run_atc_check\` aus um Code-Qualität sicherzustellen
+- Behebe gefundene Findings (Priorität 1 und 2)`,
+      },
+    }],
   };
 });
 
@@ -1303,6 +1398,320 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return ok(JSON.stringify(res, null, 2));
       }
 
+      // ── analyze_abap_context ────────────────────────────────────────────
+      case "analyze_abap_context": {
+        const p = S_AnalyzeContext.parse(args);
+        const baseUrl = p.objectUrl.replace(/\/source\/main$/, "");
+        const isDeep = (p.depth ?? "deep") === "deep";
+
+        // 1. Read main source + includes (reuse read_abap_source logic with includeRelated)
+        const mainUrl = `${baseUrl}/source/main`;
+        const mainSrc = await client.getObjectSource(mainUrl);
+        const mainText = typeof mainSrc === "string" ? mainSrc : JSON.stringify(mainSrc);
+
+        const sections: string[] = [];
+        let includeCount = 0;
+        const allSourceTexts: string[] = [mainText];
+
+        // Get object structure
+        let structure: any = null;
+        let objectType = "Unbekannt";
+        let objectPackage = "";
+        let objectName = baseUrl.split("/").filter(Boolean).pop() ?? "";
+
+        try {
+          structure = await client.objectStructure(baseUrl);
+          objectType = (structure as any)?.["adtcore:type"] ?? (structure as any)?.objectStructure?.["adtcore:type"] ?? "Unbekannt";
+          objectPackage = (structure as any)?.["adtcore:packageName"] ?? (structure as any)?.objectStructure?.["adtcore:packageName"] ?? "";
+          objectName = (structure as any)?.["adtcore:name"] ?? (structure as any)?.objectStructure?.["adtcore:name"] ?? objectName;
+        } catch { /* structure read failed — continue with source only */ }
+
+        // Collect includes from structure
+        const includesList: Array<{ type: string; uri: string; source?: string }> = [];
+
+        if (structure) {
+          const incArray = (structure as any)?.includes ??
+            (structure as any)?.objectStructure?.includes ?? [];
+          for (const inc of incArray) {
+            const uri = inc?.["abapsource:sourceUri"] ?? inc?.sourceUri ?? inc?.uri ?? "";
+            const incType = inc?.["class:includeType"] ?? inc?.includeType ?? inc?.type ?? "unknown";
+            if (uri && !uri.endsWith("/source/main")) {
+              includesList.push({ type: incType, uri });
+            }
+          }
+
+          const links = (structure as any)?.links ?? (structure as any)?.objectStructure?.links ?? [];
+          const metaLinks = (structure as any)?.metaLinks ?? [];
+          for (const link of [...links, ...metaLinks]) {
+            const href = link?.href ?? "";
+            const rel = link?.rel ?? "";
+            if (href && href.includes("/source/") && !href.endsWith("/source/main")) {
+              includesList.push({ type: rel || "related", uri: href });
+            }
+          }
+        }
+
+        // Read all include sources in parallel
+        if (includesList.length > 0) {
+          const results = await Promise.allSettled(
+            includesList.map(async (inc) => {
+              const src = await client.getObjectSource(inc.uri);
+              return { ...inc, source: typeof src === "string" ? src : JSON.stringify(src) };
+            })
+          );
+          for (const result of results) {
+            if (result.status === "fulfilled" && result.value.source) {
+              includesList[includesList.indexOf(includesList.find(i => i.uri === result.value.uri)!)] = result.value;
+              allSourceTexts.push(result.value.source);
+              includeCount++;
+            }
+          }
+        }
+
+        // Resolve INCLUDE statements in programs
+        if (baseUrl.includes("/programs/programs/")) {
+          const includePattern = /^\s*INCLUDE\s+(\S+?)[\s.]*$/gim;
+          let match;
+          const resolvedIncludes: string[] = [];
+          while ((match = includePattern.exec(mainText)) !== null) {
+            const inclName = match[1].toLowerCase().replace(/\.$/, "");
+            if (!resolvedIncludes.includes(inclName)) resolvedIncludes.push(inclName);
+          }
+          if (resolvedIncludes.length > 0) {
+            const inclResults = await Promise.allSettled(
+              resolvedIncludes.map(async (name) => {
+                const inclUrl = `/sap/bc/adt/programs/includes/${name}/source/main`;
+                const src = await client.getObjectSource(inclUrl);
+                return { name, source: typeof src === "string" ? src : JSON.stringify(src) };
+              })
+            );
+            for (const result of inclResults) {
+              if (result.status === "fulfilled") {
+                allSourceTexts.push(result.value.source);
+                includesList.push({ type: "INCLUDE", uri: result.value.name, source: result.value.source });
+                includeCount++;
+              }
+            }
+          }
+        }
+
+        // FuGr: read function modules
+        if (baseUrl.includes("/functions/groups/") && structure) {
+          const fmNodes = (structure as any)?.objectStructure?.nodes ?? (structure as any)?.nodes ?? [];
+          const fmUrls: Array<{ name: string; uri: string }> = [];
+          const collectFMs = (nodes: any[]) => {
+            for (const node of nodes) {
+              const uri = node?.["adtcore:uri"] ?? node?.uri ?? "";
+              const fmName = node?.["adtcore:name"] ?? node?.name ?? "";
+              const type = node?.["adtcore:type"] ?? node?.type ?? "";
+              if (uri && (type.startsWith("FUGR/FF") || uri.includes("/fmodule/"))) {
+                fmUrls.push({ name: fmName, uri });
+              }
+              if (node?.nodes) collectFMs(node.nodes);
+              if (node?.children) collectFMs(node.children);
+            }
+          };
+          collectFMs(Array.isArray(fmNodes) ? fmNodes : []);
+          if (fmUrls.length > 0) {
+            const fmResults = await Promise.allSettled(
+              fmUrls.map(async (fm) => {
+                const src = await client.getObjectSource(`${fm.uri}/source/main`);
+                return { name: fm.name, source: typeof src === "string" ? src : JSON.stringify(src) };
+              })
+            );
+            for (const result of fmResults) {
+              if (result.status === "fulfilled") {
+                allSourceTexts.push(result.value.source);
+                includesList.push({ type: "FUNCTION MODULE", uri: result.value.name, source: result.value.source });
+                includeCount++;
+              }
+            }
+          }
+        }
+
+        // 2. Extract class methods/attributes from structure
+        const classMethods: string[] = [];
+        const classAttributes: string[] = [];
+        if (structure) {
+          const nodes = (structure as any)?.objectStructure?.nodes ?? (structure as any)?.nodes ?? [];
+          const extractMembers = (nodeList: any[]) => {
+            for (const node of nodeList) {
+              const type = node?.["adtcore:type"] ?? node?.type ?? "";
+              const memberName = node?.["adtcore:name"] ?? node?.name ?? "";
+              if (type.includes("METHOD") || type.includes("CLAS/OM")) classMethods.push(memberName);
+              if (type.includes("ATTR") || type.includes("CLAS/OA")) classAttributes.push(memberName);
+              if (node?.nodes) extractMembers(node.nodes);
+              if (node?.children) extractMembers(node.children);
+            }
+          };
+          extractMembers(Array.isArray(nodes) ? nodes : []);
+        }
+
+        // 3. Regex: find referenced FMs, classes, interfaces in all source texts
+        const combinedSource = allSourceTexts.join("\n");
+        const referencedFMs = new Set<string>();
+        const referencedClasses = new Set<string>();
+        const staticCalls = new Set<string>();
+
+        // CALL FUNCTION 'FM_NAME'
+        const fmPattern = /CALL\s+FUNCTION\s+'([A-Z0-9_]+)'/gi;
+        let fmMatch;
+        while ((fmMatch = fmPattern.exec(combinedSource)) !== null) {
+          referencedFMs.add(fmMatch[1].toUpperCase());
+        }
+
+        // CREATE OBJECT ... TYPE classname / NEW classname(
+        const createObjPattern = /CREATE\s+OBJECT\s+\S+\s+TYPE\s+([A-Z0-9_]+)/gi;
+        let coMatch;
+        while ((coMatch = createObjPattern.exec(combinedSource)) !== null) {
+          referencedClasses.add(coMatch[1].toUpperCase());
+        }
+        const newPattern = /NEW\s+([A-Z][A-Z0-9_]*)\s*\(/gi;
+        let newMatch;
+        while ((newMatch = newPattern.exec(combinedSource)) !== null) {
+          const cls = newMatch[1].toUpperCase();
+          if (cls !== "LINE" && cls !== "OBJECT") referencedClasses.add(cls);
+        }
+
+        // Static calls: CLASSNAME=>METHOD
+        const staticPattern = /([A-Z][A-Z0-9_]*)=>([A-Z0-9_]+)/gi;
+        let stMatch;
+        while ((stMatch = staticPattern.exec(combinedSource)) !== null) {
+          const cls = stMatch[1].toUpperCase();
+          const method = stMatch[2].toUpperCase();
+          referencedClasses.add(cls);
+          staticCalls.add(`${cls}=>${method}`);
+        }
+
+        // TYPE REF TO / TYPE classname (for interfaces)
+        const typeRefPattern = /TYPE\s+REF\s+TO\s+([A-Z][A-Z0-9_]*)/gi;
+        let trMatch;
+        while ((trMatch = typeRefPattern.exec(combinedSource)) !== null) {
+          referencedClasses.add(trMatch[1].toUpperCase());
+        }
+
+        // 4. For deep analysis: get info for referenced FMs and classes
+        const fmInfos: Array<{ name: string; info: string }> = [];
+        const classInfos: Array<{ name: string; info: string }> = [];
+
+        if (isDeep) {
+          // Get FM infos
+          const fmInfoResults = await Promise.allSettled(
+            Array.from(referencedFMs).map(async (fmName) => {
+              try {
+                const searchRes = await client.searchObject(fmName, "FUGR/FF", 1);
+                const items = Array.isArray(searchRes) ? searchRes : [searchRes];
+                if (items.length > 0) {
+                  const uri = items[0]["adtcore:uri"];
+                  const desc = items[0]["adtcore:description"] ?? "";
+                  return { name: fmName, info: `${desc} (${uri})` };
+                }
+              } catch { /* ignore search failures */ }
+              return { name: fmName, info: "(keine Info verfügbar)" };
+            })
+          );
+          for (const r of fmInfoResults) {
+            if (r.status === "fulfilled") fmInfos.push(r.value);
+          }
+
+          // Get class/interface infos
+          const classInfoResults = await Promise.allSettled(
+            Array.from(referencedClasses).slice(0, 20).map(async (clsName) => {
+              try {
+                const searchRes = await client.searchObject(clsName, undefined, 1);
+                const items = Array.isArray(searchRes) ? searchRes : [searchRes];
+                if (items.length > 0) {
+                  const desc = items[0]["adtcore:description"] ?? "";
+                  const type = items[0]["adtcore:type"] ?? "";
+                  const uri = items[0]["adtcore:uri"] ?? "";
+                  let methodList = "";
+                  try {
+                    const objStruct = await client.objectStructure(uri);
+                    const nodes = (objStruct as any)?.objectStructure?.nodes ?? (objStruct as any)?.nodes ?? [];
+                    const methods: string[] = [];
+                    const extractMethods = (nodeList: any[]) => {
+                      for (const node of nodeList) {
+                        const nType = node?.["adtcore:type"] ?? node?.type ?? "";
+                        const nName = node?.["adtcore:name"] ?? node?.name ?? "";
+                        if (nType.includes("METHOD") || nType.includes("CLAS/OM") || nType.includes("INTF/OI")) {
+                          methods.push(nName);
+                        }
+                        if (node?.nodes) extractMethods(node.nodes);
+                        if (node?.children) extractMethods(node.children);
+                      }
+                    };
+                    extractMethods(Array.isArray(nodes) ? nodes : []);
+                    if (methods.length > 0) methodList = ` | Methoden: ${methods.join(", ")}`;
+                  } catch { /* ignore structure read failures */ }
+                  return { name: clsName, info: `${type} — ${desc}${methodList}` };
+                }
+              } catch { /* ignore */ }
+              return { name: clsName, info: "(keine Info verfügbar)" };
+            })
+          );
+          for (const r of classInfoResults) {
+            if (r.status === "fulfilled") classInfos.push(r.value);
+          }
+        }
+
+        // 5. Build structured report
+        sections.push(`══ KONTEXT-ANALYSE: ${objectName.toUpperCase()} ══`);
+
+        // Program structure
+        sections.push(`\n📋 PROGRAMMSTRUKTUR`);
+        sections.push(`  Typ: ${objectType}`);
+        if (objectPackage) sections.push(`  Paket: ${objectPackage}`);
+        sections.push(`  Includes: ${includeCount}${includesList.length > 0 ? ` (${includesList.map(i => i.type).join(", ")})` : ""}`);
+        if (classMethods.length > 0) sections.push(`  Methoden: ${classMethods.join(", ")}`);
+        if (classAttributes.length > 0) sections.push(`  Attribute: ${classAttributes.join(", ")}`);
+
+        // Full source code
+        sections.push(`\n📄 QUELLCODE (Main + Includes)`);
+        sections.push(`── MAIN (${baseUrl}) ──`);
+        sections.push(mainText);
+        for (const inc of includesList) {
+          if (inc.source) {
+            sections.push(`── ${inc.type.toUpperCase()} (${inc.uri}) ──`);
+            sections.push(inc.source);
+          }
+        }
+
+        // Referenced objects
+        sections.push(`\n🔗 REFERENZIERTE OBJEKTE`);
+        if (referencedFMs.size > 0) {
+          sections.push(`  Funktionsbausteine:`);
+          for (const fm of referencedFMs) {
+            const info = fmInfos.find(f => f.name === fm);
+            sections.push(`    - ${fm}${info ? ` (${info.info})` : ""}`);
+          }
+        }
+        if (referencedClasses.size > 0) {
+          sections.push(`  Klassen/Interfaces:`);
+          for (const cls of referencedClasses) {
+            const info = classInfos.find(c => c.name === cls);
+            sections.push(`    - ${cls}${info ? ` (${info.info})` : ""}`);
+          }
+        }
+        if (staticCalls.size > 0) {
+          sections.push(`  Statische Aufrufe: ${Array.from(staticCalls).join(", ")}`);
+        }
+        if (referencedFMs.size === 0 && referencedClasses.size === 0) {
+          sections.push(`  (keine externen Referenzen erkannt)`);
+        }
+
+        // Summary
+        sections.push(`\n⚡ ZUSAMMENFASSUNG`);
+        sections.push(`  - ${includeCount} Includes, ${referencedFMs.size} FMs, ${referencedClasses.size} Klassen/Interfaces referenziert`);
+        if (includesList.length > 0) {
+          const mainInclude = includesList.find(i => i.source && i.source.length > mainText.length);
+          if (mainInclude) {
+            sections.push(`  - Umfangreichster Code in: ${mainInclude.type} (${mainInclude.uri})`);
+          }
+        }
+
+        return ok(sections.join("\n"));
+      }
+
       // ── find_tools ──────────────────────────────────────────────────────
       case "find_tools": {
         const p = S_FindTools.parse(args);
@@ -1410,6 +1819,7 @@ async function main() {
     console.error(`  Blocked : ${cfg.blockedPackages.join(", ") || "keine"}`);
   const tIcon  = cfg.deferTools ? `${CORE_TOOL_NAMES.size} initial (${ALL_TOOLS.length} gesamt, deferred)` : `${ALL_TOOLS.length} registriert`;
   console.error(`  Tools   : ${tIcon}`);
+  console.error(`  Prompts : 1 (abap_develop)`);
 
   try {
     await getClient();
