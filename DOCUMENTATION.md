@@ -24,11 +24,14 @@
    - [TRANSPORT — Transporte](#transport--transporte)
    - [ABAPGIT — Git-Integration](#abapgit--git-integration)
    - [QUERY — SQL-Abfragen](#query--sql-abfragen)
-7. [ADT Write-Workflow](#adt-write-workflow)
-8. [Sicherheitskonzept](#sicherheitskonzept)
-9. [ADT Objekt-URL Referenz](#adt-objekt-url-referenz)
-10. [Fehlerbehebung](#fehlerbehebung)
-11. [Bekannte Einschränkungen](#bekannte-einschränkungen)
+   - [DOCUMENTATION — SAP-Dokumentation](#documentation--sap-dokumentation)
+7. [MCP Prompts](#mcp-prompts)
+   - [abap_develop — Entwicklungsworkflow](#abap_develop--entwicklungsworkflow)
+8. [ADT Write-Workflow](#adt-write-workflow)
+9. [Sicherheitskonzept](#sicherheitskonzept)
+10. [ADT Objekt-URL Referenz](#adt-objekt-url-referenz)
+11. [Fehlerbehebung](#fehlerbehebung)
+12. [Bekannte Einschränkungen](#bekannte-einschränkungen)
 
 ---
 
@@ -37,12 +40,12 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**38 Tools** in 11 Gruppen + 1 Meta-Tool decken den kompletten ABAP-Entwicklungsworkflow ab:
+**42 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
 | SEARCH | 1 | Objektsuche mit Wildcards |
-| READ | 5 | Quellcode, Metadaten, Where-Used, Code Completion |
+| READ | 6 | Quellcode, Metadaten, Where-Used, Code Completion, Kontext-Analyse |
 | WRITE | 4 | Quellcode schreiben, aktivieren, formatieren |
 | CREATE | 7 | Programme, Klassen, Interfaces, FuGr, CDS, Tabellen, Messages |
 | DELETE | 1 | Objekte löschen |
@@ -52,9 +55,11 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | TRANSPORT | 2 | Transport-Infos, Transport-Inhalte |
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
 | QUERY | 1 | SELECT-Statements direkt ausführen |
+| DOCUMENTATION | 3 | SAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices |
 | META | 1 | Tool-Finder für dynamische Tool-Registrierung |
+| PROMPTS | 1 | `abap_develop` — Intelligenter ABAP-Entwicklungsworkflow |
 
-> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 7 Kern-Tools geladen.
+> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 8 Kern-Tools geladen.
 > Weitere Tools werden on-demand über `find_tools` aktiviert — das spart ~75-80% Tokens pro `tools/list`-Aufruf.
 
 ---
@@ -139,6 +144,7 @@ cp .env.example .env
 | `DEFAULT_TRANSPORT` | | — | Standard-Transport wenn nicht angegeben |
 | `SYNTAX_CHECK_BEFORE_ACTIVATE` | | `true` | Syntaxcheck vor Aktivierung erzwingen |
 | `MAX_DUMPS` | | `20` | Maximale Anzahl Short Dumps |
+| `SAP_ABAP_VERSION` | | `latest` | ABAP-Version für help.sap.com Dokumentation (z.B. `latest`, `758`, `754`) |
 | `DEFER_TOOLS` | | `true` | Tool-Deferred-Modus: initial nur Kern-Tools laden |
 
 ### Beispiel .env (Entwicklungssystem)
@@ -227,7 +233,7 @@ Findet und aktiviert ABAP-Tools nach Suchbegriff oder Kategorie. Wird nur im Def
 | Parameter | Typ | Pflicht | Beschreibung |
 |-----------|-----|---------|--------------|
 | `query` | string | | Suchmuster für Tool-Namen/Beschreibungen |
-| `category` | string | | Kategorie: `SEARCH`, `READ`, `WRITE`, `CREATE`, `DELETE`, `TEST`, `QUALITY`, `DIAGNOSTICS`, `TRANSPORT`, `ABAPGIT`, `QUERY` |
+| `category` | string | | Kategorie: `SEARCH`, `READ`, `WRITE`, `CREATE`, `DELETE`, `TEST`, `QUALITY`, `DIAGNOSTICS`, `TRANSPORT`, `ABAPGIT`, `QUERY`, `DOCUMENTATION` |
 | `enable` | boolean | | Tools aktivieren/deaktivieren (Default: true) |
 
 **Beispiele:**
@@ -242,7 +248,7 @@ Kategorieübersicht anzeigen
 → find_tools()
 ```
 
-**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `find_tools`
+**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `find_tools`
 
 ---
 
@@ -341,6 +347,53 @@ Holt Code-Vervollständigungsvorschläge vom SAP-System für eine Cursor-Positio
 | `line` | number | ✓ | Cursor-Zeile (1-basiert) |
 | `column` | number | ✓ | Cursor-Spalte (0-basiert) |
 | `mainProgram` | string | | Hauptprogramm (für Includes) |
+
+---
+
+#### `analyze_abap_context`
+
+Analysiert den vollständigen Kontext eines ABAP-Objekts. Liest Quellcode inkl. aller Includes, erkennt referenzierte Funktionsbausteine, Klassen und Interfaces per Regex, ruft deren Metadaten ab und liefert einen strukturierten Kontext-Report. **Empfohlener Einstiegspunkt** vor jeder Code-Änderung.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `objectUrl` | string | ✓ | ADT-URL des Haupt-Objekts |
+| `depth` | enum | | `shallow` = nur Hauptquelle + direkte Includes; `deep` = rekursiv alle Referenzen (Default: `deep`) |
+
+**Rückgabe:** Strukturierter Report mit folgenden Abschnitten:
+
+```
+══ KONTEXT-ANALYSE: <OBJEKTNAME> ══
+
+📋 PROGRAMMSTRUKTUR
+  Typ, Paket, Anzahl Includes, Methoden, Attribute
+
+📄 QUELLCODE (Main + Includes)
+  Vollständiger Quellcode aller Abschnitte
+
+🔗 REFERENZIERTE OBJEKTE
+  Funktionsbausteine (mit Beschreibung)
+  Klassen/Interfaces (mit Methoden-Liste)
+  Statische Aufrufe
+
+⚡ ZUSAMMENFASSUNG
+  Anzahl Includes, FMs, Klassen
+```
+
+**Erkannte Referenz-Patterns:**
+- `CALL FUNCTION 'FM_NAME'` → Funktionsbausteine
+- `CREATE OBJECT ... TYPE classname` / `NEW classname(` → Klassen
+- `CLASSNAME=>METHOD` → Statische Aufrufe
+- `TYPE REF TO interface` → Interfaces
+
+**Beispiel:**
+```
+Vollständigen Kontext eines Reports analysieren
+→ analyze_abap_context(objectUrl="/sap/bc/adt/programs/programs/zrybak_test", depth="deep")
+```
+
+> **Hinweis:** Dieses Tool ist ein Kern-Tool und immer verfügbar (auch im Deferred-Modus). Es wird vom MCP Prompt `abap_develop` als erster Schritt im Entwicklungsworkflow verwendet.
 
 ---
 
@@ -702,6 +755,117 @@ SELECT COUNT(*) FROM EKKO
 ```
 
 > ⚠️ Nur lesende Zugriffe erlaubt. DML-Statements (INSERT, UPDATE, DELETE) werden vom System abgelehnt.
+
+---
+
+### DOCUMENTATION — SAP-Dokumentation
+
+#### `get_abap_keyword_doc`
+
+Ruft ABAP-Keyword-Dokumentation von help.sap.com ab. Liefert die offizielle SAP-Doku als formatierten Text.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `keyword` | string | ✓ | ABAP-Keyword (z.B. `SELECT`, `LOOP`, `READ TABLE`, `MODIFY`) |
+| `version` | string | | ABAP-Version (z.B. `latest`, `758`, `754`). Default: `SAP_ABAP_VERSION` |
+
+**Beispiele:**
+```
+SELECT-Dokumentation abrufen
+→ get_abap_keyword_doc(keyword="select")
+
+READ TABLE Dokumentation für NW 7.54
+→ get_abap_keyword_doc(keyword="read table", version="754")
+```
+
+**Verhalten bei 404:** Versucht automatisch eine alternative URL mit Underscores (z.B. `read_table` statt `readtable`).
+
+---
+
+#### `get_abap_class_doc`
+
+Ruft ABAP-Klassen/Interface-Dokumentation von help.sap.com ab.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `className` | string | ✓ | ABAP-Klassenname oder Interface (z.B. `CL_SALV_TABLE`, `IF_AMDP_MARKER_HDB`) |
+| `version` | string | | ABAP-Version (z.B. `latest`, `758`, `754`). Default: `SAP_ABAP_VERSION` |
+
+**Beispiel:**
+```
+CL_SALV_TABLE Dokumentation abrufen
+→ get_abap_class_doc(className="CL_SALV_TABLE")
+```
+
+---
+
+#### `get_module_best_practices`
+
+Liefert modulspezifische SAP ABAP Best Practices. Jeder Eintrag enthält:
+- Wichtige Tabellen & Strukturen
+- Empfohlene BAPIs/Klassen (statt Direktzugriff)
+- ABAP-Coding-Richtlinien (modulspezifisch)
+- Häufige Fehler & Fallstricke
+- S/4HANA-Migrationshinweise
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `module` | enum | ✓ | SAP-Modul: `FI`, `CO`, `MM`, `SD`, `PP`, `PM`, `QM`, `HR`, `HCM`, `PS`, `WM`, `EWM`, `BASIS`, `BC`, `ABAP` |
+
+**Beispiel:**
+```
+FI Best Practices abrufen
+→ get_module_best_practices(module="FI")
+
+Allgemeine ABAP Best Practices
+→ get_module_best_practices(module="ABAP")
+```
+
+> **Aliase:** `HCM` liefert HR-Inhalte, `BC` liefert BASIS-Inhalte.
+
+---
+
+### Konfiguration: `SAP_ABAP_VERSION`
+
+| Variable | Default | Beschreibung |
+|----------|---------|--------------|
+| `SAP_ABAP_VERSION` | `latest` | ABAP-Version für help.sap.com URLs (z.B. `latest`, `758`, `754`) |
+
+Die Version wird für `get_abap_keyword_doc` und `get_abap_class_doc` verwendet, kann aber pro Aufruf über den `version`-Parameter überschrieben werden.
+
+---
+
+## MCP Prompts
+
+### `abap_develop` — Entwicklungsworkflow
+
+Ein MCP Prompt der einen strukturierten 6-Schritte-Workflow für ABAP-Entwicklung erzwingt. Der Prompt stellt sicher, dass die KI vor dem Coding den vollständigen Kontext erfasst, moderne ABAP-Prinzipien anwendet und Qualitätsprüfungen durchführt.
+
+**Argumente:**
+
+| Argument | Pflicht | Beschreibung |
+|----------|---------|--------------|
+| `object_name` | ✓ | Name des ABAP-Objekts (z.B. `ZRYBAK_TEST`) |
+| `task` | ✓ | Aufgabe (z.B. `ALV-Grid mit CL_SALV_TABLE einbauen`) |
+
+**Workflow-Schritte:**
+
+1. **Kontext erfassen** — `search_abap_objects` → `analyze_abap_context(depth="deep")` → vollständigen Report lesen
+2. **Referenzen recherchieren** — Veraltete Patterns erkennen, moderne Alternativen suchen (z.B. `REUSE_ALV_GRID_DISPLAY` → `CL_SALV_TABLE`)
+3. **Clean ABAP anwenden** — Inline-Deklarationen, String Templates, funktionale Methoden, ABAP SQL, CX_*-Ausnahmen, OOP
+4. **Code-Platzierung** — Richtiges Include / richtige Methode anhand des Kontext-Reports bestimmen
+5. **Implementierung** — `write_abap_source` mit Retry bei Syntax-/Aktivierungsfehlern
+6. **Qualitätsprüfung** — `run_atc_check`, Findings Priorität 1+2 beheben
+
+**Verwendung in MCP-Clients:**
+
+Der Prompt wird über die MCP Prompt-API aufgerufen. In Claude Desktop oder anderen MCP-Clients kann er direkt als Prompt ausgewählt werden. Er generiert eine User-Message mit dem vollständigen Workflow-Template, das die KI Schritt für Schritt abarbeitet.
 
 ---
 

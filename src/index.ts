@@ -18,6 +18,7 @@
  *   [TRANSPORT] Transport-Management
  *   [GIT]       abapGit Integration
  *   [QUERY]     SELECT-Queries
+ *   [DOC]       SAP-Dokumentation & Best Practices
  *
  * ADT Write-Workflow:
  *   lock → setObjectSource → syntaxCheck → activate → unLock
@@ -57,6 +58,7 @@ const cfg = {
   maxDumps:                parseInt(process.env.MAX_DUMPS ?? "20", 10),
   allowUnauthorized:       process.env.SAP_ALLOW_UNAUTHORIZED === "true",
   deferTools:              process.env.DEFER_TOOLS !== "false",
+  sapAbapVersion:          process.env.SAP_ABAP_VERSION ?? "latest",
 };
 
 if (!cfg.url || !cfg.user || !cfg.password) {
@@ -395,6 +397,20 @@ const S_AnalyzeContext = z.object({
     .describe("shallow = nur Hauptquelle + direkte Includes; deep = rekursiv alle Referenzen"),
 });
 
+// --- DOCUMENTATION ---
+const S_GetAbapKeywordDoc = z.object({
+  keyword: z.string().describe("ABAP-Keyword (z.B. SELECT, LOOP, READ TABLE, MODIFY)"),
+  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
+});
+const S_GetAbapClassDoc = z.object({
+  className: z.string().describe("ABAP-Klassenname oder Interface (z.B. CL_SALV_TABLE, IF_AMDP_MARKER_HDB)"),
+  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
+});
+const S_GetModuleBestPractices = z.object({
+  module: z.enum(["FI", "CO", "MM", "SD", "PP", "PM", "QM", "HR", "HCM", "PS", "WM", "EWM", "BASIS", "BC", "ABAP"])
+    .describe("SAP-Modul (z.B. FI, MM, SD, ABAP)"),
+});
+
 // ============================================================================
 // HELPER: Zod → JSON Schema (minimal inline converter)
 // ============================================================================
@@ -433,6 +449,534 @@ function resolveMainProgram(mainProgram: string | undefined): string | undefined
   // Plain program name → convert to ADT URL
   return `/sap/bc/adt/programs/programs/${mainProgram.toLowerCase()}`;
 }
+
+// ============================================================================
+// DOCUMENTATION HELPERS — fetch SAP help.sap.com pages
+// ============================================================================
+
+async function fetchSapDocumentation(url: string): Promise<{ success: boolean; content: string; url: string }> {
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { "Accept": "text/html", "User-Agent": "ABAP-MCP-Server/2.0" },
+    });
+    if (!resp.ok) return { success: false, content: `HTTP ${resp.status}`, url };
+    const html = await resp.text();
+    return { success: true, content: extractMainContent(html), url };
+  } catch (e) {
+    return { success: false, content: (e as Error).message, url };
+  }
+}
+
+function extractMainContent(html: string): string {
+  // Extract title
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? decodeHtmlEntities(titleMatch[1].trim()) : "";
+
+  // Try to extract main content area
+  let content = "";
+  const contentMatch = html.match(/<div[^>]*class="[^"]*content[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<div[^>]*class="[^"]*footer)/i)
+    ?? html.match(/<section[^>]*>([\s\S]*?)<\/section>/i)
+    ?? html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (contentMatch) content = contentMatch[1];
+  else content = html;
+
+  // HTML → Markdown-like conversion
+  content = content
+    // Remove script/style blocks
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    // Headers
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n")
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n")
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n")
+    .replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, "\n#### $1\n")
+    // Code blocks
+    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, "\n```abap\n$1\n```\n")
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+    // Bold/italic
+    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**")
+    .replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, "**$1**")
+    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, "*$1*")
+    // Lists
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n")
+    // Line breaks / paragraphs
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<p[^>]*>/gi, "")
+    // Tables: simple row extraction
+    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, row: string) => {
+      const cells = [...row.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(m => m[1].trim());
+      return cells.join(" | ") + "\n";
+    })
+    // Remove remaining HTML tags
+    .replace(/<[^>]+>/g, "")
+    // Decode entities
+    .replace(/&nbsp;/g, " ");
+
+  content = decodeHtmlEntities(content);
+
+  // Normalize whitespace
+  content = content
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Truncate to ~8000 chars
+  if (content.length > 8000) {
+    content = content.substring(0, 8000) + "\n\n... (gekuerzt)";
+  }
+
+  return title ? `# ${title}\n\n${content}` : content;
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function buildKeywordUrl(keyword: string, version: string): string {
+  const v = version === "latest" ? "latest" : version;
+  const kw = keyword.toLowerCase().replace(/[\s-]+/g, "");
+  return `https://help.sap.com/doc/abapdocu_${v}_index_htm/${v}/en-US/abap${kw}.htm`;
+}
+
+function buildClassUrl(className: string, version: string): string {
+  const v = version === "latest" ? "latest" : version;
+  const cn = className.toLowerCase().replace(/[\s]+/g, "");
+  return `https://help.sap.com/doc/abapdocu_${v}_index_htm/${v}/en-US/aben${cn}.htm`;
+}
+
+// ============================================================================
+// MODULE BEST PRACTICES
+// ============================================================================
+
+const MODULE_BEST_PRACTICES: Record<string, string> = {
+  FI: `# SAP FI (Financial Accounting) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- BKPF/BSEG — Belegkopf/-positionen
+- BSID/BSAD — Debitoreneinzelposten (offen/ausgeglichen)
+- BSIK/BSAK — Kreditoreneinzelposten (offen/ausgeglichen)
+- SKA1/SKB1 — Sachkonten (Plan/Buchungskreis)
+- T001 — Buchungskreise
+
+## Empfohlene BAPIs & Klassen
+- BAPI_ACC_DOCUMENT_POST — Buchungsbelege erfassen (statt FB01 direkt)
+- BAPI_ACC_DOCUMENT_REV_POST — Storno
+- CL_ACC_DOCUMENT — OO-API für Belege (S/4HANA)
+- BAPI_COMPANYCODE_GETLIST — Buchungskreise lesen
+
+## Coding-Richtlinien
+- NIE direkt in BKPF/BSEG schreiben — immer BAPIs oder ACC-Klassen verwenden
+- Buchungslogik über BAPI_ACC_DOCUMENT_POST, nicht BDC auf FB01
+- Steuerberechnung dem System überlassen (CALCULATE_TAX_FROM_NET_AMOUNT)
+- Währungsumrechnung: CONVERT_TO_LOCAL_CURRENCY
+
+## Häufige Fehler
+- Direkte BSEG-Selects ohne Index → Performance-Probleme (BSEG ist Cluster-Tabelle!)
+- In S/4HANA: BSEG ist View auf ACDOCA → SELECT auf ACDOCA nutzen
+- Fehlende BAPI_TRANSACTION_COMMIT nach BAPI-Aufrufen
+- Währungsfelder ohne Referenz auf Währungsschlüssel
+
+## S/4HANA-Migration
+- BSEG → ACDOCA (Universal Journal)
+- Neue CDS Views: I_JournalEntry, I_OperationalAcctgDocItem
+- FAGL_SPLITTER ersetzt klassisches Splitting`,
+
+  CO: `# SAP CO (Controlling) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- CSKS/CSKT — Kostenstellen (Stamm/Texte)
+- CSKA/CSKB — Kostenarten
+- COBK/COEP — CO-Belegkopf/-positionen
+- COSS/COSP — Summen Stat./Plan
+- AUFK — Innenaufträge
+
+## Empfohlene BAPIs & Klassen
+- BAPI_COSTCENTER_GETLIST — Kostenstellen lesen
+- BAPI_INTERNALORDER_GETLIST — Aufträge lesen
+- K_ORDER_READ — Auftragsdaten lesen
+- BAPI_ACC_ACTIVITY_ALLOC_POST — Leistungsverrechnung
+
+## Coding-Richtlinien
+- CO-Buchungen immer über BAPIs, nie direkt auf COEP
+- Kostenstellenhierarchien über SET-Funktionsbausteine lesen
+- Planwerte über BAPI_COSTCENTER_PLAN_POST
+- CO-PA: COPA_FUNCTION_MODULE-Aufrufe für Ergebnisobjekte
+
+## Häufige Fehler
+- Fehlende Berechtigung auf CO-Objekte (Kostenrechnungskreis)
+- Periodenabgrenzung nicht beachtet bei Reports
+- CO-PA-Merkmale falsch zugeordnet
+
+## S/4HANA-Migration
+- CO-Belege in ACDOCA integriert
+- CDS Views: I_CostCenter, I_InternalOrder
+- Embedded Analytics statt Report Painter/Writer`,
+
+  MM: `# SAP MM (Materials Management) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- MARA/MAKT/MARC/MARD — Materialstamm
+- EKKO/EKPO — Bestellkopf/-positionen
+- EBAN — Bestellanforderungen
+- MKPF/MSEG — Materialbelege
+- MCHB — Chargenbestände
+
+## Empfohlene BAPIs & Klassen
+- BAPI_PO_CREATE1 — Bestellung anlegen
+- BAPI_PR_CREATE — Bestellanforderung anlegen
+- BAPI_MATERIAL_GET_DETAIL — Materialstamm lesen
+- BAPI_GOODSMVT_CREATE — Warenbewegung buchen
+- CL_EXITHANDLER — BAdI-Implementierungen für MM-Erweiterungen
+
+## Coding-Richtlinien
+- Materialstamm lesen: BAPI_MATERIAL_GET_DETAIL oder SELECT auf MARA mit Buffering
+- Bestellungen: BAPI_PO_CREATE1 (nie ME_CREATE_PO direkt)
+- Warenbewegungen: BAPI_GOODSMVT_CREATE mit GM_CODE
+- Reservierungen: BAPI_RESERVATION_CREATE1
+
+## Häufige Fehler
+- SELECT * auf MSEG ohne Einschränkung → riesige Datenmengen
+- Fehlende COMMIT WORK nach BAPI-Aufrufen
+- Mengeneinheit-Konvertierung vergessen (UNIT_CONVERSION_SIMPLE)
+
+## S/4HANA-Migration
+- MARD vereinfacht (kein LQUA mehr direkt)
+- MATDOC ersetzt MKPF/MSEG für neue Belege
+- CDS Views: I_PurchaseOrderAPI01, I_Material`,
+
+  SD: `# SAP SD (Sales & Distribution) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- VBAK/VBAP — Kundenauftragskopf/-positionen
+- LIKP/LIPS — Lieferungskopf/-positionen
+- VBRK/VBRP — Fakturakopf/-positionen
+- KNA1/KNVV — Debitorenstamm
+- KONV — Konditionen
+
+## Empfohlene BAPIs & Klassen
+- BAPI_SALESORDER_CREATEFROMDAT2 — Kundenauftrag anlegen
+- BAPI_DELIVERY_GETLIST — Lieferungen lesen
+- BAPI_BILLINGDOC_CREATEMULTIPLE — Faktura anlegen
+- SD_SALESDOCUMENT_CREATE — neuere API
+
+## Coding-Richtlinien
+- Aufträge über BAPIs anlegen, nicht BDC auf VA01
+- Preisfindung: Pricing-BAdIs nutzen, nicht KONV direkt ändern
+- Verfügbarkeit: ATP-Funktionsbausteine (AVAILABILITY_CHECK)
+- Partnerfindung: Standard-Partnerschema respektieren
+
+## Häufige Fehler
+- VBAP-SELECT ohne Auftragsart-Einschränkung → Performance
+- Konditionstechnik umgehen statt richtig konfigurieren
+- Fehlende Berechtigungsprüfungen auf Verkaufsorganisation
+
+## S/4HANA-Migration
+- CDS Views: I_SalesOrder, I_SalesOrderItem, I_BillingDocument
+- Credit Management über SAP Credit Management (FIN-FSCM-CR)
+- Output Management über BRF+`,
+
+  PP: `# SAP PP (Production Planning) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- AFKO/AFPO — Fertigungsauftragskopf/-positionen
+- AFVC/AFVV — Vorgänge/Vorgangswerte
+- STKO/STPO — Stücklisten
+- PLKO/PLPO — Arbeitspläne
+- RESB — Reservierungen
+
+## Empfohlene BAPIs & Klassen
+- BAPI_PRODORD_CREATE — Fertigungsauftrag anlegen
+- BAPI_PRODORD_RELEASE — Auftrag freigeben
+- BAPI_GOODSMVT_CREATE — Rückmeldung/Warenbewegung
+- CS_BOM_EXPL_MAT_V2 — Stücklistenauflösung
+
+## Coding-Richtlinien
+- Fertigungsaufträge: BAPIs verwenden, nicht CO01-BDC
+- Stücklisten: CS_BOM_EXPL_MAT_V2 für Auflösung
+- Kapazitätsplanung: Standard-FBs nutzen
+- Rückmeldungen: BAPI_PRODORDCONF_CREATE_TT
+
+## Häufige Fehler
+- Stücklistenauflösung ohne Stichtag
+- Fehlende Statusprüfung vor Auftragsoperationen
+- Performance bei massenhafter Stücklistenauflösung
+
+## S/4HANA-Migration
+- CDS Views: I_ProductionOrder, I_ManufacturingOrder
+- PP/DS ersetzt teilweise klassische Planung`,
+
+  PM: `# SAP PM (Plant Maintenance) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- EQUI/EQKT — Equipment
+- IFLO/IFLOT — Technische Plätze
+- AUFK — PM-Aufträge
+- AFIH — Instandhaltungskopf
+- QMEL — Meldungen
+
+## Empfohlene BAPIs & Klassen
+- BAPI_EQUI_CREATE — Equipment anlegen
+- BAPI_ALM_ORDER_MAINTAIN — PM-Auftrag pflegen
+- BAPI_ALM_NOTIF_CREATE — Meldung anlegen
+- BAPI_FUNCLOC_CREATE — Technischen Platz anlegen
+
+## Coding-Richtlinien
+- PM-Aufträge: BAPI_ALM_ORDER_MAINTAIN (Multi-Step)
+- Meldungen: BAPI_ALM_NOTIF_* Familie
+- Klassifizierung: BAPI_CLASSIFICATION_*
+- Messdokumente: MEASUREM_DOCUM_RFC_SINGLE_001
+
+## Häufige Fehler
+- Fehlende Partnerpflege bei Aufträgen
+- Statusnetz nicht beachtet
+- Equipment-Hierarchie fehlerhaft aufgebaut
+
+## S/4HANA-Migration
+- Asset Management Integration
+- CDS Views: I_MaintenanceOrder, I_FunctionalLocation`,
+
+  QM: `# SAP QM (Quality Management) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- QALS — Prüflose
+- QASR — Stichprobenergebnisse
+- QAVE — Verwendungsentscheide
+- QMEL — Qualitätsmeldungen
+- QMFE — Fehler/Ursachen
+
+## Empfohlene BAPIs & Klassen
+- BAPI_QUALNOT_CREATE — Qualitätsmeldung anlegen
+- BAPI_INSPLOT_GETLIST — Prüflose lesen
+- QM_INSPECTION_LOT_CREATE — Prüflos anlegen
+
+## Coding-Richtlinien
+- Prüflose nicht manuell erzeugen wenn automatische Losöffnung konfiguriert
+- Verwendungsentscheide: Standard-Workflow nutzen
+- Kataloge für Fehlerarten konsequent pflegen
+
+## Häufige Fehler
+- Prüfpunkt-Zuordnung in Arbeitsplänen vergessen
+- QM-Berechtigungen zu restriktiv/zu offen
+- Fehlende Dynamisierungsregeln bei Stichproben
+
+## S/4HANA-Migration
+- Eingebettetes QM in S/4HANA Manufacturing
+- CDS Views: I_InspectionLot, I_QualityNotification`,
+
+  HR: `# SAP HR/HCM (Human Capital Management) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- PA0001-PA0999 — Personalstamm-Infotypen
+- HRP1000/HRP1001 — OM-Objekte/Verknüpfungen
+- PCL1/PCL2 — Abrechnungscluster
+- PERNR — Personalnummer (zentrale Entität)
+
+## Empfohlene BAPIs & Klassen
+- HR_READ_INFOTYPE — Infotyp lesen (Standard-FB)
+- HR_INFOTYPE_OPERATION — Infotyp pflegen (INSS/MOD/DEL)
+- RH_READ_OBJECT — OM-Objekte lesen
+- CL_HR_PA_REQUEST_API — PA-Maßnahmen (neuere API)
+
+## Coding-Richtlinien
+- Infotypen: IMMER HR_READ_INFOTYPE / MACROS (RP-READ-INFOTYPE)
+- NIE direkt auf PA-Tabellen schreiben!
+- Berechtigungen: HR-Auth über PERNR + INFTY + SUBTY prüfen
+- Logische Datenbank PNP/PNPCE für Reports nutzen
+- Zeitwirtschaft: Schemas über PCRs anpassen, nicht hart codieren
+
+## Häufige Fehler
+- SELECT auf PA-Tabellen ohne Begda/Endda-Logik
+- Cluster-Tabellen (PCL*) direkt lesen statt über Makros
+- Fehlende Berücksichtigung von Gültigkeitszeiträumen
+- MOLGA-abhängige Logik nicht berücksichtigt
+
+## S/4HANA-Migration
+- SAP SuccessFactors für Cloud-HCM
+- On-Premise: HCM for S/4HANA (Kompatibilitätspaket)
+- Employee Central als Master für Stammdaten`,
+
+  PS: `# SAP PS (Project System) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- PROJ — Projektdefinition
+- PRPS — PSP-Elemente
+- AUFK — PS-Netzpläne/Aufträge
+- AFVC — Vorgänge
+- BPGE/BPJA — Budgetwerte
+
+## Empfohlene BAPIs & Klassen
+- BAPI_PS_INITIALIZATION — PS-APIs initialisieren
+- BAPI_PS_CREATE_WBS_ELEMENT — PSP-Element anlegen
+- BAPI_NETWORK_MAINTAIN — Netzplan pflegen
+- BAPI_PROJECT_MAINTAIN — Projekt pflegen
+
+## Coding-Richtlinien
+- PS-APIs immer im Buffer-Modus (INIT → Operationen → SAVE)
+- Projekthierarchie: Top-Down aufbauen
+- Budget: Über BAPIs, nicht direkt auf BPGE
+- Terminierung: Standard-Terminierungsfunktionen nutzen
+
+## Häufige Fehler
+- BAPI_PS_PRECOMMIT vor BAPI_TRANSACTION_COMMIT vergessen
+- Hierarchie-Ebenen durcheinander
+- Statusprofil nicht berücksichtigt
+
+## S/4HANA-Migration
+- Commercial Project Management (CPM)
+- CDS Views: I_Project, I_WBSElement`,
+
+  WM: `# SAP WM/EWM (Warehouse Management) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- LQUA — Quants (Lagerbestände)
+- LTAP/LTAK — Transportaufträge
+- LAGP — Lagerplätze
+- T300/T301 — Lager-/Lagertyp-Customizing
+- LEIN — Lagereinheiten
+
+## Empfohlene BAPIs & Klassen
+- BAPI_WHSE_TO_CREATE_STOCK — Transportauftrag anlegen
+- L_TO_CREATE_MOVE_SU — TA für Lagereinheit
+- BAPI_WHSE_STOCK_GET_LIST — Bestände lesen
+
+## Coding-Richtlinien
+- Transportaufträge: Immer über BAPIs/Standard-FBs
+- Lagerplatzfindung: Putaway-Strategien konfigurieren, nicht hart codieren
+- Inventur: Standard-Transaktionen MI*/LI* nutzen
+
+## Häufige Fehler
+- Quant-Tabelle (LQUA) direkt modifizieren
+- Fehlende Quittierung von Transportaufträgen
+- WM-MM-Integration: Bestandsdifferenzen durch fehlende TA-Quittierung
+
+## S/4HANA-Migration
+- WM → EWM (Embedded oder Dezentral)
+- Stock Room Management als einfache Alternative
+- EWM: /SCWM/ Namespace, CDS Views verfügbar`,
+
+  EWM: `# SAP EWM (Extended Warehouse Management) — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- /SCWM/AQUA — Quants
+- /SCWM/ORDIM_O — Warehouse Tasks
+- /SCWM/LAGP — Storage Bins
+- /SCWM/WHO — Warehouse Orders
+
+## Empfohlene Klassen
+- /SCWM/CL_WM_PACKING — Packlogik
+- /SCWM/CL_SR_BOM — Stücklisten im Lager
+- PPF (Post Processing Framework) für Automatisierung
+
+## Coding-Richtlinien
+- BAdIs für Prozessanpassungen (z.B. /SCWM/EX_HUOPT)
+- Warehouse Tasks über Standard-APIs erstellen
+- RF-Framework für mobile Dialoge nutzen
+
+## Häufige Fehler
+- Direkte Tabellenmanipulation statt API-Nutzung
+- EWM-ERP-Integration: IDoc-Verarbeitung nicht überwacht
+- Fehlende Exception Handling bei /SCWM/-APIs
+
+## S/4HANA-Migration
+- Embedded EWM direkt in S/4HANA verfügbar
+- Dezentrales EWM für komplexe Szenarien`,
+
+  BASIS: `# SAP BASIS/BC — Best Practices
+
+## Wichtige Tabellen & Strukturen
+- USR02 — Benutzerstamm
+- TVARVC — Selektionsvariablen
+- TBTCO/TBTCP — Job-Übersicht
+- E070/E071 — Transporte
+- TADIR — Objektkatalog
+
+## Empfohlene Klassen & FBs
+- CL_LOG_PPF — Application Log
+- BAL_LOG_CREATE / BAL_LOG_MSG_ADD — Application Log (klassisch)
+- JOB_OPEN / JOB_SUBMIT / JOB_CLOSE — Hintergrundverarbeitung
+- CL_BCS — Business Communication Services (E-Mail)
+- CL_GUI_FRONTEND_SERVICES — Datei-Up/Download
+
+## Coding-Richtlinien
+- Logging: Application Log (BAL) oder CL_LOG_PPF nutzen, nicht WRITE
+- Jobs: JOB_OPEN/SUBMIT/CLOSE für Hintergrundverarbeitung
+- Berechtigungen: AUTHORITY-CHECK immer mit spezifischen Objekten
+- Konfiguration: TVARVC für variable Parameter statt Hardcoding
+- Sperren: Enqueue/Dequeue FBs für eigene Sperrobjekte
+
+## Häufige Fehler
+- AUTHORITY-CHECK vergessen oder zu generisch
+- Sperrobjekte nicht freigegeben (Enqueue ohne Dequeue)
+- Hardcodierte Mandanten/Systemnummern
+- COMMIT WORK in Update-Task-FBs
+
+## S/4HANA-Migration
+- ABAP Platform: Cloud-fähiges ABAP
+- Released APIs beachten (Whitelist)
+- CL_ABAP_CONTEXT_INFO statt SY-UNAME/SY-DATUM direkt`,
+
+  ABAP: `# ABAP — Allgemeine Best Practices
+
+## Clean ABAP Prinzipien
+- Inline-Deklarationen: DATA(lv_var), FIELD-SYMBOL(<fs>)
+- String Templates: |Text { lv_var }| statt CONCATENATE
+- NEW #() / VALUE #() / CONV #() — Constructor Expressions
+- COND #() / SWITCH #() statt IF/CASE für Zuweisungen
+- REDUCE #() für Aggregationen
+- FILTER #() statt LOOP + IF
+
+## Moderne ABAP SQL
+- SELECT ... INTO TABLE @DATA(lt_result) — Host-Variablen mit @
+- SELECT ... FROM ... JOIN — statt FOR ALL ENTRIES
+- CDS Views für komplexe Abfragen
+- ABAP SQL Aggregationen statt ABAP LOOP + COLLECT
+
+## OOP-Richtlinien
+- Klassen/Interfaces statt Funktionsbausteine für neue Logik
+- Dependency Injection über Interfaces (Testbarkeit)
+- SOLID-Prinzipien beachten
+- Ausnahmen: CX_*-Klassen, TRY/CATCH statt SY-SUBRC
+
+## Performance
+- SELECT nur benötigte Felder, nie SELECT *
+- Interne Tabellen: SORTED/HASHED TABLE für häufige Zugriffe
+- PARALLEL CURSOR für verschachtelte LOOPs
+- Pufferung: Tabellenpufferung konfigurieren, Single-Record-Buffer nutzen
+- FOR ALL ENTRIES: Duplikate und leere Tabelle prüfen!
+
+## Vermeidung obsoleter Anweisungen
+- MOVE → = (Zuweisung)
+- COMPUTE → direkte Berechnung
+- CHECK in Methoden → IF + RETURN
+- FORM/PERFORM → Methoden
+- Kopfzeilen-Tabellen → separate Workarea
+
+## Testbarkeit
+- ABAP Unit: CL_ABAP_UNIT_ASSERT
+- Test-Doubles: CL_ABAP_TESTDOUBLE
+- Test-Seams: IF_OSQL_TEST_ENVIRONMENT für DB
+- SQL Test Double Framework
+
+## S/4HANA Kompatibilität
+- Released APIs prüfen (Whitelist-Ansatz)
+- CL_ABAP_CONTEXT_INFO nutzen
+- RAP (RESTful ABAP Programming) für neue Apps
+- CDS Views als zentrale Datenmodelle`,
+};
+
+// Aliases: HCM → HR, BC → BASIS
+MODULE_BEST_PRACTICES["HCM"] = MODULE_BEST_PRACTICES["HR"];
+MODULE_BEST_PRACTICES["BC"] = MODULE_BEST_PRACTICES["BASIS"];
 
 // ============================================================================
 // WRITE SOURCE WORKFLOW (lock → write → check → activate → unlock)
@@ -701,6 +1245,17 @@ const TOOLS: ToolDef[] = [
   { name: "analyze_abap_context",
     description: "Analysiert den vollständigen Kontext eines ABAP-Objekts: Liest Quellcode inkl. aller Includes, erkennt referenzierte Funktionsbausteine, Klassen und Interfaces per Regex, ruft deren Metadaten ab und liefert einen strukturierten Kontext-Report. Einstiegspunkt für den abap_develop Workflow.",
     schema: S_AnalyzeContext },
+
+  // ── DOCUMENTATION ─────────────────────────────────────────────────────
+  { name: "get_abap_keyword_doc",
+    description: "Ruft ABAP-Keyword-Dokumentation von help.sap.com ab (z.B. SELECT, LOOP, READ TABLE). Liefert die offizielle SAP-Doku als formatierten Text.",
+    schema: S_GetAbapKeywordDoc },
+  { name: "get_abap_class_doc",
+    description: "Ruft ABAP-Klassen/Interface-Dokumentation von help.sap.com ab (z.B. CL_SALV_TABLE, IF_AMDP_MARKER_HDB). Liefert die offizielle SAP-Doku als formatierten Text.",
+    schema: S_GetAbapClassDoc },
+  { name: "get_module_best_practices",
+    description: "Liefert modulspezifische SAP ABAP Best Practices (wichtige Tabellen, empfohlene BAPIs/Klassen, Coding-Richtlinien, häufige Fehler, S/4HANA-Migrationshinweise). Module: FI, CO, MM, SD, PP, PM, QM, HR, HCM, PS, WM, EWM, BASIS, BC, ABAP.",
+    schema: S_GetModuleBestPractices },
 ];
 
 // ============================================================================
@@ -723,6 +1278,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   TRANSPORT:   ["get_transport_info", "get_transport_objects", "create_transport"],
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
   QUERY:       ["run_select_query", "get_inactive_objects"],
+  DOCUMENTATION: ["get_abap_keyword_doc", "get_abap_class_doc", "get_module_best_practices"],
 };
 
 const CORE_TOOL_NAMES = new Set([
@@ -740,7 +1296,7 @@ const enabledTools = new Set<string>();
 const S_FindTools = z.object({
   query: z.string().optional().describe("Suchmuster fuer Tool-Namen/Beschreibungen"),
   category: z.string().optional().describe(
-    "Kategorie: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY"
+    "Kategorie: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION"
   ),
   enable: z.boolean().optional().default(true).describe("Tools aktivieren (default: true)"),
 });
@@ -748,7 +1304,7 @@ const S_FindTools = z.object({
 const FIND_TOOLS_ENTRY = {
   name: "find_tools",
   description: "Findet und aktiviert ABAP-Tools nach Suchbegriff oder Kategorie. " +
-    "Kategorien: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY. " +
+    "Kategorien: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION. " +
     "Aktivierte Tools werden sofort verfuegbar.",
   schema: S_FindTools,
 };
@@ -1712,6 +2268,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return ok(sections.join("\n"));
       }
 
+      // ── get_abap_keyword_doc ────────────────────────────────────────────
+      case "get_abap_keyword_doc": {
+        const p = S_GetAbapKeywordDoc.parse(args);
+        const version = p.version ?? cfg.sapAbapVersion;
+        const url = buildKeywordUrl(p.keyword, version);
+        let result = await fetchSapDocumentation(url);
+        // Fallback: try underscore variant (e.g. "read_table" for "read table")
+        if (!result.success) {
+          const altUrl = buildKeywordUrl(p.keyword.replace(/[\s]+/g, "_"), version);
+          if (altUrl !== url) {
+            result = await fetchSapDocumentation(altUrl);
+          }
+        }
+        if (!result.success) {
+          return err(`Dokumentation fuer '${p.keyword}' nicht gefunden (${result.content}).\nVersuchte URL: ${result.url}`);
+        }
+        return ok(`${result.content}\n\n---\nQuelle: ${result.url}`);
+      }
+
+      // ── get_abap_class_doc ─────────────────────────────────────────────
+      case "get_abap_class_doc": {
+        const p = S_GetAbapClassDoc.parse(args);
+        const version = p.version ?? cfg.sapAbapVersion;
+        const url = buildClassUrl(p.className, version);
+        const result = await fetchSapDocumentation(url);
+        if (!result.success) {
+          return err(`Dokumentation fuer '${p.className}' nicht gefunden (${result.content}).\nVersuchte URL: ${result.url}`);
+        }
+        return ok(`${result.content}\n\n---\nQuelle: ${result.url}`);
+      }
+
+      // ── get_module_best_practices ──────────────────────────────────────
+      case "get_module_best_practices": {
+        const p = S_GetModuleBestPractices.parse(args);
+        const key = p.module.toUpperCase();
+        const practices = MODULE_BEST_PRACTICES[key];
+        if (!practices) {
+          return err(`Keine Best Practices fuer Modul '${p.module}' verfuegbar. Verfuegbare Module: ${Object.keys(MODULE_BEST_PRACTICES).join(", ")}`);
+        }
+        return ok(practices);
+      }
+
       // ── find_tools ──────────────────────────────────────────────────────
       case "find_tools": {
         const p = S_FindTools.parse(args);
@@ -1819,6 +2417,7 @@ async function main() {
     console.error(`  Blocked : ${cfg.blockedPackages.join(", ") || "keine"}`);
   const tIcon  = cfg.deferTools ? `${CORE_TOOL_NAMES.size} initial (${ALL_TOOLS.length} gesamt, deferred)` : `${ALL_TOOLS.length} registriert`;
   console.error(`  Tools   : ${tIcon}`);
+  console.error(`  Doku    : help.sap.com v${cfg.sapAbapVersion}`);
   console.error(`  Prompts : 1 (abap_develop)`);
 
   try {

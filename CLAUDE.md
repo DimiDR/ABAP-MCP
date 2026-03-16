@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 38+ tools across 11 categories for full ABAP development workflow support.
+ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 42 tools across 12 categories + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
 
 ## Build & Development Commands
 
@@ -45,8 +45,9 @@ npm run clean
 
 ### Tool Architecture
 - **Schema Validation**: Zod for all tool parameters (30+ schemas defined inline)
-- **Tool Groups**: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY
-- **Deferred Loading** (default): Only 6 core tools (`search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `find_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
+- **Tool Groups**: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION
+- **Deferred Loading** (default): Only 7 core tools (`search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `find_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
+- **MCP Prompt** (`abap_develop`): Enforces a 6-step ABAP development workflow (context analysis → reference research → Clean ABAP → code placement → implementation → quality check)
 
 ### ADT Write Workflow (Critical Flow)
 ```
@@ -79,6 +80,7 @@ lock(objectUrl)
 - **PROD**: All `false` (never enable)
 
 ### Token Optimization
+- `SAP_ABAP_VERSION=latest` (default): ABAP version for help.sap.com documentation URLs (e.g. `latest`, `758`, `754`)
 - `DEFER_TOOLS=true` (default): Lazy load tools on demand via `find_tools(category=...)` or `find_tools(query=...)`
 - `DEFER_TOOLS=false`: Load all 38 tools upfront (higher initial token cost)
 
@@ -103,7 +105,7 @@ All tools use Zod schemas (defined near line 185). Schemas include descriptions 
 
 ## Important Context from Documentation
 
-- **38 Tools in 11 Groups**: Full lifecycle coverage (search → read → write → test → quality → deployment)
+- **42 Tools in 12 Groups + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
 - **ADT-Based**: Uses `/sap/bc/adt/*` endpoints (SICF must be active on SAP side)
 - **Write Safety**: Lock conflicts prevented by serial execution; syntax errors block activation; incomplete unlocks logged for manual recovery (SE03)
 - **Token Budget**: Default deferred mode targets ~75% reduction in tokens per `tools/list` call
