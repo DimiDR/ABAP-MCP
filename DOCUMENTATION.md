@@ -40,7 +40,7 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**42 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**43 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
@@ -54,7 +54,7 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | DIAGNOSTICS | 4 | Short Dumps, Performance Traces |
 | TRANSPORT | 2 | Transport-Infos, Transport-Inhalte |
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
-| QUERY | 1 | SELECT-Statements direkt ausführen |
+| QUERY | 2 | SELECT-Statements, ABAP-Snippets ausführen |
 | DOCUMENTATION | 3 | SAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices |
 | META | 1 | Tool-Finder für dynamische Tool-Registrierung |
 | PROMPTS | 1 | `abap_develop` — Intelligenter ABAP-Entwicklungsworkflow |
@@ -140,6 +140,7 @@ cp .env.example .env
 | `SAP_LANGUAGE` | | `EN` | Anmeldesprache |
 | `ALLOW_WRITE` | | `false` | Write-Tools aktivieren. **Nur auf DEV!** |
 | `ALLOW_DELETE` | | `false` | Löschen aktivieren. Zusätzlich zu ALLOW_WRITE |
+| `ALLOW_EXECUTE` | | `false` | `execute_abap_snippet` aktivieren. Zusätzlich zu ALLOW_WRITE |
 | `BLOCKED_PACKAGES` | | `SAP,SHD` | Kommaliste gesperrter Paket-Präfixe |
 | `DEFAULT_TRANSPORT` | | — | Standard-Transport wenn nicht angegeben |
 | `SYNTAX_CHECK_BEFORE_ACTIVATE` | | `true` | Syntaxcheck vor Aktivierung erzwingen |
@@ -758,6 +759,52 @@ SELECT COUNT(*) FROM EKKO
 
 ---
 
+#### `execute_abap_snippet`
+
+Führt einen temporären ABAP-Code-Schnipsel live im SAP-System aus und gibt die Ausgabe zurück. Das Programm wird in `$TMP` angelegt, sofort ausgeführt und danach automatisch gelöscht — kein permanenter Zustand im System.
+
+Ideal für: Tabellenwerte prüfen, Berechnungen testen, API-Rückgaben inspizieren, Debugging-Hypothesen validieren.
+
+> ⚠️ Erfordert `ALLOW_WRITE=true` **und** `ALLOW_EXECUTE=true`.
+> ⚠️ Nur lesende Logik verwenden — schreibende Anweisungen werden statisch geprüft und blockiert.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `source` | string | ✓ | Vollständiger ABAP-Code. Muss mit `REPORT` oder `PROGRAM` beginnen. Ausgabe über `WRITE`. |
+| `timeout` | number | | Maximale Laufzeit in Sekunden (1–30, Default: 10) |
+
+**Workflow:**
+```
+1. Statische Sicherheitsprüfung (verbotene Anweisungen)
+2. Temporäres Programm in $TMP anlegen (ZZ_MCP_<timestamp>)
+3. Quellcode schreiben (lock → write → unlock)
+4. Syntaxcheck — bei Fehlern: abbrechen
+5. Aktivieren
+6. Ausführen → Ausgabe zurückgeben
+7. Programm löschen (immer — auch bei Fehler)
+```
+
+**Verbotene Anweisungen (statisch geprüft):**
+- `COMMIT WORK`, `ROLLBACK WORK`
+- `INSERT`, `UPDATE`, `DELETE`, `MODIFY` auf DB-Tabellen
+- `CALL FUNCTION ... IN UPDATE TASK`
+- `BAPI_TRANSACTION_COMMIT`
+
+**Beispiele:**
+```abap
+Tabellenwerte prüfen
+→ execute_abap_snippet(source="REPORT ztest.\nSELECT * FROM t001 INTO TABLE @DATA(lt_t001) UP TO 5 ROWS.\nLOOP AT lt_t001 INTO DATA(ls).\n  WRITE: / ls-bukrs, ls-butxt.\nENDLOOP.")
+
+Systemvariablen ausgeben
+→ execute_abap_snippet(source="REPORT ztest.\nWRITE: / sy-sysid, sy-mandt, sy-uname, sy-datum.")
+```
+
+> **Bekannte Limitation:** Ausgabe-Format hängt von der ADT-Version ab (NW 7.52+). Der `/runs`-Endpunkt ist auf älteren Systemen nicht verfügbar.
+
+---
+
 ### DOCUMENTATION — SAP-Dokumentation
 
 #### `get_abap_keyword_doc`
@@ -930,11 +977,11 @@ Alle Write-Operationen auf Quellcode folgen diesem Protokoll:
 
 ### Empfohlene Konfiguration pro Systemtyp
 
-| System | ALLOW_WRITE | ALLOW_DELETE | BLOCKED_PACKAGES |
-|--------|-------------|--------------|------------------|
-| DEV | `true` | `false` | `SAP,SHD` |
-| QAS/TEST | `false` | `false` | `SAP,SHD` |
-| PRD | `false` | `false` | `SAP,SHD` (nie ändern!) |
+| System | ALLOW_WRITE | ALLOW_DELETE | ALLOW_EXECUTE | BLOCKED_PACKAGES |
+|--------|-------------|--------------|---------------|------------------|
+| DEV | `true` | `false` | `true` | `SAP,SHD` |
+| QAS/TEST | `false` | `false` | `false` | `SAP,SHD` |
+| PRD | `false` | `false` | `false` | `SAP,SHD` (nie ändern!) |
 
 ---
 

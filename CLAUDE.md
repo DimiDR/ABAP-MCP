@@ -70,13 +70,14 @@ lock(objectUrl)
 **Safety Guards (all default-safe):**
 - `ALLOW_WRITE=false` (default) — Disables all write/create/delete tools
 - `ALLOW_DELETE=false` (default) — Requires `ALLOW_WRITE=true` + explicit enable
+- `ALLOW_EXECUTE=false` (default) — Enables `execute_abap_snippet`; requires `ALLOW_WRITE=true` + explicit enable
 - `BLOCKED_PACKAGES=SAP,SHD` (default) — Customer namespace protection (prevents writes to SAP-owned packages)
 - Enforced customer namespace check: names must start with Z/Y
 - System-level SAP auth (`S_ADT_RES`, `S_DEVELOP`) is final barrier
 
 **Recommended per environment:**
-- **DEV**: `ALLOW_WRITE=true`, `ALLOW_DELETE=false`
-- **QAS/TEST**: `ALLOW_WRITE=false`, `ALLOW_DELETE=false`
+- **DEV**: `ALLOW_WRITE=true`, `ALLOW_DELETE=false`, `ALLOW_EXECUTE=true`
+- **QAS/TEST**: `ALLOW_WRITE=false`, `ALLOW_DELETE=false`, `ALLOW_EXECUTE=false`
 - **PROD**: All `false` (never enable)
 
 ### Token Optimization
@@ -103,9 +104,18 @@ All tools use Zod schemas (defined near line 185). Schemas include descriptions 
 - **Short Dumps/Traces**: Only available on NW >= 7.52; older systems will error
 - **Code Completion**: System-specific; available if ADT API version supports it
 
+### execute_abap_snippet (Execution Tool)
+- Workflow: statische Prüfung → Programm anlegen → Source schreiben → Syntaxcheck → aktivieren → ausführen → löschen
+- Cleanup im `finally`-Block — Programm wird IMMER gelöscht, auch bei Laufzeitfehler
+- Temporärer Name: ZZ_MCP_<timestamp> in $TMP — kein Transport nötig, zufälliger Suffix verhindert Kollisionen
+- Statische Verbotsliste: COMMIT WORK, ROLLBACK, INSERT/UPDATE/DELETE auf DB, BAPI_TRANSACTION_COMMIT
+- Erfordert `ALLOW_WRITE=true` **und** `ALLOW_EXECUTE=true` — doppelte Sicherheitsebene
+- Wrapped in `withWriteLock` + `withStatefulSession` für Concurrency-Safety
+- Bekannte Limitation: Ausgabe-Format hängt von ADT-Version ab (NW 7.52+)
+
 ## Important Context from Documentation
 
-- **42 Tools in 12 Groups + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
+- **43 Tools in 12 Groups + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
 - **ADT-Based**: Uses `/sap/bc/adt/*` endpoints (SICF must be active on SAP side)
 - **Write Safety**: Lock conflicts prevented by serial execution; syntax errors block activation; incomplete unlocks logged for manual recovery (SE03)
 - **Token Budget**: Default deferred mode targets ~75% reduction in tokens per `tools/list` call

@@ -51,6 +51,7 @@ const cfg = {
   language:                process.env.SAP_LANGUAGE ?? "EN",
   allowWrite:              process.env.ALLOW_WRITE === "true",
   allowDelete:             process.env.ALLOW_DELETE === "true",
+  allowExecute:            process.env.ALLOW_EXECUTE === "true",
   blockedPackages:         (process.env.BLOCKED_PACKAGES ?? "SAP,SHD")
                              .split(",").map(s => s.trim().toUpperCase()).filter(Boolean),
   defaultTransport:        process.env.DEFAULT_TRANSPORT ?? "",
@@ -123,39 +124,6 @@ async function withStatefulSession<T>(client: ADTClient, fn: () => Promise<T>): 
   }
 }
 
-// ============================================================================
-// LOCK HELPER — retry lock after dropping stale session
-// ============================================================================
-
-async function lockWithRetry(client: ADTClient, objectUrl: string): Promise<{ LOCK_HANDLE: string }> {
-  try {
-    return await client.lock(objectUrl);
-  } catch (lockErr: any) {
-    const msg = String(lockErr?.message ?? lockErr ?? "");
-    if (msg.includes("currently editing") || msg.includes("ist gesperrt") || msg.includes("is currently editing")) {
-      // Stale lock from a previous session — drop session to release it
-      try { await client.dropSession(); } catch { /* ignore */ }
-      client.stateful = session_types.stateful;
-      try {
-        return await client.lock(objectUrl);
-      } catch {
-        // dropSession didn't release the lock — full logout + login to discard
-        // all stale cookies/session state and start completely fresh
-        try { await client.dropSession(); } catch { /* ignore */ }
-        try { await client.logout(); } catch { /* ignore */ }
-        await client.login();
-        client.stateful = session_types.stateful;
-        await new Promise(r => setTimeout(r, 1000));
-        try {
-          return await client.lock(objectUrl);
-        } catch {
-          throw lockErr;
-        }
-      }
-    }
-    throw lockErr;
-  }
-}
 
 // ============================================================================
 // SAFETY GUARDS
@@ -368,6 +336,15 @@ const S_GitPull = z.object({
 // --- QUERY ---
 const S_Query = z.object({
   query: z.string().describe("SELECT-Statement, z.B. SELECT * FROM T001 UP TO 10 ROWS"),
+});
+const S_ExecuteSnippet = z.object({
+  source: z.string().describe(
+    "Vollständiger ausführbarer ABAP-Code. Muss ein gültiges Programm sein — " +
+    "beginnt mit REPORT oder PROGRAM, endet mit Punkt. " +
+    "Ausgabe über WRITE-Anweisungen. Kein SELECTION-SCREEN."
+  ),
+  timeout: z.number().int().min(1).max(30).default(10).optional()
+    .describe("Maximale Laufzeit in Sekunden (Default: 10, Max: 30)"),
 });
 
 // --- NEW TOOLS ---
@@ -1017,7 +994,8 @@ async function writeWorkflow(
     try {
       // Phase 1: lock → write → unlock (stateful session needed for lock/write)
       log.push(`🔒 Sperren: ${objectUrl}`);
-      const lock = await lockWithRetry(client, objectUrl);
+      // Direkter Lock — withStatefulSession verwaltet die Session bereits
+      const lock = await client.lock(objectUrl);
       lockHandle = lock.LOCK_HANDLE;
       if (!lockHandle) throw new Error("Lock fehlgeschlagen — kein Lock-Handle erhalten");
       log.push(`✅ Lock erhalten`);
@@ -1231,6 +1209,15 @@ const TOOLS: ToolDef[] = [
   { name: "run_select_query",
     description: "Führt ein SELECT-Statement direkt gegen SAP-Tabellen aus. Gibt Ergebnis-Rows als JSON zurück. Nur lesende Zugriffe erlaubt.",
     schema: S_Query },
+  { name: "execute_abap_snippet",
+    description:
+      "Führt einen temporären ABAP-Code-Schnipsel live im SAP-System aus und gibt die Ausgabe zurück. " +
+      "Das Programm wird in $TMP angelegt, sofort ausgeführt und danach automatisch gelöscht — kein permanenter Zustand. " +
+      "Ideal für: Tabellenwerte prüfen, Berechnungen testen, API-Rückgaben inspizieren, Debugging-Hypothesen validieren. " +
+      "⚠️ Erfordert ALLOW_WRITE=true. " +
+      "⚠️ Nur lesende Logik verwenden — COMMIT WORK, BAPI-Aufrufe und schreibende DB-Operationen sind verboten. " +
+      "Das Tool prüft den Code statisch auf verbotene Anweisungen bevor es ihn ausführt.",
+    schema: S_ExecuteSnippet },
 
   // ── NEW TOOLS ─────────────────────────────────────────────────────────────
   { name: "find_definition",
@@ -1291,7 +1278,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   DIAGNOSTICS: ["get_short_dumps", "get_short_dump_detail", "get_traces", "get_trace_detail"],
   TRANSPORT:   ["get_transport_info", "get_transport_objects", "create_transport"],
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
-  QUERY:       ["run_select_query", "get_inactive_objects"],
+  QUERY:       ["run_select_query", "get_inactive_objects", "execute_abap_snippet"],
   DOCUMENTATION: ["get_abap_keyword_doc", "get_abap_class_doc", "get_module_best_practices"],
 };
 
@@ -1762,7 +1749,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         assertDeleteEnabled();
         const p = S_DeleteObject.parse(args);
         await withWriteLock(() => withStatefulSession(client, async () => {
-          const lock = await lockWithRetry(client, p.objectUrl);
+          const lock = await client.lock(p.objectUrl);
           try {
             await client.deleteObject(p.objectUrl, lock.LOCK_HANDLE, p.transport || undefined);
           } catch (e) {
@@ -1794,7 +1781,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         assertWriteEnabled();
         const p = S_CreateTestInclude.parse(args);
         await withWriteLock(() => withStatefulSession(client, async () => {
-          const lock = await lockWithRetry(client, p.classUrl);
+          const lock = await client.lock(p.classUrl);
           try {
             await client.createTestInclude(p.classUrl, lock.LOCK_HANDLE);
             await client.unLock(p.classUrl, lock.LOCK_HANDLE);
@@ -1985,6 +1972,116 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const p = S_GetTableContents.parse(args);
         const res = await client.tableContents(p.tableName, p.maxRows ?? 100);
         return ok(JSON.stringify(res, null, 2));
+      }
+
+      // ── execute_abap_snippet ────────────────────────────────────────────
+      case "execute_abap_snippet": {
+        assertWriteEnabled("Code-Ausführung");
+        if (!cfg.allowExecute)
+          throw new McpError(ErrorCode.InvalidRequest,
+            "Code-Ausführung ist deaktiviert. ALLOW_EXECUTE=true in .env setzen (zusätzlich zu ALLOW_WRITE=true). ⚠️ Nur auf DEV-Systemen aktivieren!");
+        const p = S_ExecuteSnippet.parse(args);
+
+        // Statische Sicherheitsprüfung — verbotene Anweisungen blockieren
+        const FORBIDDEN = [
+          /\bCOMMIT\s+WORK\b/i,
+          /\bROLLBACK\s+WORK\b/i,
+          /\bCALL\s+FUNCTION\b.*\bIN\s+UPDATE\s+TASK\b/is,
+          /\bINSERT\s+(?!INTO\s+@)/i,
+          /\bDELETE\s+FROM\b/i,
+          /\bUPDATE\s+(?!@)/i,
+          /\bMODIFY\s+(?!@|\s*SCREEN)/i,
+          /\bBAPI_TRANSACTION_COMMIT\b/i,
+        ];
+        const forbidden = FORBIDDEN.find(r => r.test(p.source));
+        if (forbidden) {
+          return err(
+            `❌ Verbotene Anweisung erkannt (${forbidden.source.substring(0, 40)}...). ` +
+            "execute_abap_snippet erlaubt nur lesende Operationen. " +
+            "Für schreibende Operationen: write_abap_source verwenden."
+          );
+        }
+
+        // Sicherstellen dass Code ausführbar ist (beginnt mit REPORT/PROGRAM)
+        const trimmed = p.source.trim();
+        const snippetSource = /^(REPORT|PROGRAM)\s/i.test(trimmed)
+          ? trimmed
+          : `REPORT zz_mcp_snippet.\n${trimmed}`;
+
+        // Zufälliger Name um Kollisionen bei parallelen Aufrufen zu vermeiden
+        const snippetName = `ZZ_MCP_${Date.now().toString(36).toUpperCase()}`;
+        let programUrl: string | undefined;
+
+        return await withWriteLock(() => withStatefulSession(client, async () => {
+          try {
+            // 1. Temporäres Programm anlegen
+            await client.createObject(
+              "PROG/P", snippetName, "$TMP", "MCP Temp Snippet",
+              "/sap/bc/adt/packages/%24TMP", undefined, undefined
+            );
+            programUrl = `/sap/bc/adt/programs/programs/${snippetName.toLowerCase()}`;
+
+            // 2. Quellcode schreiben (lock → write → unlock)
+            // Direkter Lock statt lockWithRetry — withStatefulSession verwaltet die Session bereits
+            const lock = await client.lock(programUrl);
+            try {
+              await client.setObjectSource(
+                `${programUrl}/source/main`,
+                snippetSource,
+                lock.LOCK_HANDLE,
+                undefined
+              );
+            } finally {
+              await client.unLock(programUrl, lock.LOCK_HANDLE);
+            }
+
+            // 3. Syntaxcheck vor Ausführung
+            const syntaxResult = await client.syntaxCheck(programUrl, programUrl, snippetSource);
+            const syntaxErrors = (Array.isArray(syntaxResult) ? syntaxResult : [])
+              .filter((m: any) => ["E", "A"].includes(m.severity));
+            if (syntaxErrors.length > 0) {
+              const msgs = syntaxErrors.map((e: any) =>
+                `  Zeile ${e.line ?? "?"}: ${e.text}`
+              );
+              return err(`❌ Syntaxfehler — Code nicht ausgeführt:\n${msgs.join("\n")}`);
+            }
+
+            // 4. Aktivieren (muss aktiviert sein um ausführbar zu sein)
+            await client.activate(snippetName, programUrl);
+
+            // 5. Programm ausführen
+            const runResp = await client.httpClient.request(
+              `${programUrl}/runs`, {
+                method: "POST",
+                headers: { "Content-Type": "application/xml" },
+                body: `<?xml version="1.0" encoding="utf-8"?>
+<run:abapProgramRun xmlns:run="http://www.sap.com/adt/programs/runs"
+  run:logicalSystem=""
+  run:noData="false"/>`,
+              }
+            );
+
+            const output = typeof runResp.body === "string"
+              ? runResp.body
+              : JSON.stringify(runResp.body, null, 2);
+
+            return ok(`✅ Ausführung erfolgreich\n\n${output || "(keine Ausgabe — WRITE-Anweisungen vorhanden?)"}`);
+
+          } finally {
+            // 6. Temporäres Programm immer löschen — auch bei Fehler
+            if (programUrl) {
+              try {
+                const delLock = await client.lock(programUrl);
+                await client.deleteObject(programUrl, delLock.LOCK_HANDLE, undefined);
+              } catch (delErr) {
+                console.error(
+                  `⚠️ Temporäres Programm ${snippetName} konnte nicht gelöscht werden:`,
+                  delErr instanceof Error ? delErr.message : String(delErr)
+                );
+              }
+            }
+          }
+        }));
       }
 
       // ── analyze_abap_context ────────────────────────────────────────────
@@ -2466,8 +2563,11 @@ async function main() {
   console.error(`  User    : ${cfg.user}  Client: ${cfg.client}  Lang: ${cfg.language}`);
   console.error(`  Write   : ${wIcon}`);
   console.error(`  Delete  : ${dIcon}`);
-  if (cfg.allowWrite)
+  const eIcon  = cfg.allowExecute ? "✅ aktiv" : "❌ deaktiviert";
+  if (cfg.allowWrite) {
     console.error(`  Blocked : ${cfg.blockedPackages.join(", ") || "keine"}`);
+  }
+  console.error(`  Execute : ${eIcon}`);
   const tIcon  = cfg.deferTools ? `${CORE_TOOL_NAMES.size} initial (${ALL_TOOLS.length} gesamt, deferred)` : `${ALL_TOOLS.length} registriert`;
   console.error(`  Tools   : ${tIcon}`);
   console.error(`  Doku    : help.sap.com v${cfg.sapAbapVersion}`);
@@ -2479,7 +2579,6 @@ async function main() {
   } catch (e) {
     console.error(`  ADT     : ⚠️  Verbindung fehlgeschlagen — ${(e as Error).message}`);
     console.error("            Server läuft weiter; Verbindung wird beim ersten Tool-Aufruf erneut versucht.");
-    adtClient = null;
   }
   console.error("");
 
