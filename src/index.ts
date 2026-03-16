@@ -73,11 +73,24 @@ if (!cfg.url || !cfg.user || !cfg.password) {
 let adtClient: ADTClient | null = null;
 
 async function getClient(): Promise<ADTClient> {
-  if (adtClient) return adtClient;
+  if (adtClient) {
+    try {
+      await adtClient.httpClient.request("/sap/bc/adt/core/discovery", { method: "HEAD" });
+      return adtClient;
+    } catch {
+      adtClient = null; // Session abgelaufen → neu aufbauen
+    }
+  }
   const sslConfig = cfg.allowUnauthorized ? createSSLConfig(true) : {};
   const options: ClientOptions = { keepAlive: true, ...sslConfig };
   adtClient = new ADTClient(cfg.url, cfg.user, cfg.password, cfg.client, cfg.language, options);
-  await adtClient.login();
+  try {
+    await adtClient.login();
+  } catch (e) {
+    adtClient = null;
+    throw new McpError(ErrorCode.InternalError,
+      `ADT-Verbindung nicht verfügbar: ${e instanceof Error ? e.message : String(e)}. Prüfe: SAP_URL erreichbar? VPN aktiv? SICF /sap/bc/adt aktiviert? Credentials korrekt?`);
+  }
   return adtClient;
 }
 
@@ -178,9 +191,9 @@ function assertCustomerNamespace(name: string, prefix: string[]): void {
 
 function assertSelectOnly(query: string): void {
   const trimmed = query.trim();
-  if (!/^SELECT\s/i.test(trimmed))
+  if (!/^SELECT\s/i.test(trimmed) || /[;.]\s*(INSERT|UPDATE|DELETE|MODIFY|COMMIT)\s/i.test(trimmed))
     throw new McpError(ErrorCode.InvalidRequest,
-      "Nur SELECT-Statements sind erlaubt. Die Query muss mit 'SELECT' beginnen.");
+      "Nur SELECT-Statements sind erlaubt. Die Query muss mit 'SELECT' beginnen und darf keine DML-Anweisungen enthalten.");
 }
 
 // ============================================================================
@@ -426,13 +439,14 @@ function toJsonSchema(schema: z.ZodTypeAny): object {
       }
       return { type: "object", properties, ...(required.length ? { required } : {}) };
     }
-    if (s instanceof z.ZodArray)   return { type: "array", items: c(s.element) };
+    const desc = (t: z.ZodTypeAny) => t._def.description ? { description: t._def.description } : {};
+    if (s instanceof z.ZodArray)   return { type: "array", items: c(s.element), ...desc(s) };
     if (s instanceof z.ZodOptional) return c(s.unwrap());
     if (s instanceof z.ZodDefault)  return c(s._def.innerType);
-    if (s instanceof z.ZodEnum)     return { type: "string", enum: s.options };
-    if (s instanceof z.ZodString)   return { type: "string", ...(s._def.description ? { description: s._def.description } : {}) };
-    if (s instanceof z.ZodNumber)   return { type: "number" };
-    if (s instanceof z.ZodBoolean)  return { type: "boolean" };
+    if (s instanceof z.ZodEnum)     return { type: "string", enum: s.options, ...desc(s) };
+    if (s instanceof z.ZodString)   return { type: "string", ...desc(s) };
+    if (s instanceof z.ZodNumber)   return { type: "number", ...desc(s) };
+    if (s instanceof z.ZodBoolean)  return { type: "boolean", ...desc(s) };
     return {};
   }
   return c(schema);
@@ -1827,10 +1841,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── get_short_dump_detail ───────────────────────────────────────────
       case "get_short_dump_detail": {
         const p = S_GetDumpDetail.parse(args);
-        const feed = await client.dumps();
-        const dump = feed.dumps?.find(d => d.id === p.dumpId);
-        if (!dump) return err(`Dump '${p.dumpId}' nicht gefunden.`);
-        return ok(JSON.stringify(dump, null, 2));
+        // Try direct ADT endpoint first to avoid loading all dumps
+        try {
+          const res = await client.httpClient.request(
+            `/sap/bc/adt/runtime/dumps/${encodeURIComponent(p.dumpId)}`, { method: "GET" }
+          );
+          return ok(typeof res.body === "string" ? res.body : JSON.stringify(res.body, null, 2));
+        } catch {
+          // Fallback: load all dumps and find the one
+          const feed = await client.dumps();
+          const dump = feed.dumps?.find(d => d.id === p.dumpId);
+          if (!dump) return err(`Dump '${p.dumpId}' nicht gefunden.`);
+          return ok(JSON.stringify(dump, null, 2));
+        }
       }
 
       // ── get_traces ──────────────────────────────────────────────────────
@@ -1860,7 +1883,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Direct ADT REST call — works for any transport, not just current user's
         const tUrl = `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(p.transportId)}`;
         const tResp = await client.httpClient.request(tUrl, { method: "GET" });
-        return ok(`Transport '${p.transportId}':\n\n${typeof tResp.body === "string" ? tResp.body : JSON.stringify(tResp.body, null, 2)}`);
+        const xml = typeof tResp.body === "string" ? tResp.body : "";
+        // Extract structured object references from ADT XML
+        const objects: Array<{ name: string; type: string; uri: string }> = [];
+        const objPattern = /<adtcore:objectReference[^>]*adtcore:name="([^"]*)"[^>]*adtcore:type="([^"]*)"[^>]*adtcore:uri="([^"]*)"/g;
+        let m;
+        while ((m = objPattern.exec(xml)) !== null) {
+          objects.push({ name: m[1], type: m[2], uri: m[3] });
+        }
+        return ok(objects.length > 0
+          ? `Transport '${p.transportId}': ${objects.length} Objekte\n\n${JSON.stringify(objects, null, 2)}`
+          : `Transport '${p.transportId}':\n\n${xml}`);
       }
 
       // ── get_abapgit_repos ───────────────────────────────────────────────
@@ -2009,6 +2042,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Read all include sources in parallel
         if (includesList.length > 0) {
+          const includeUriToIndex = new Map(includesList.map((inc, i) => [inc.uri, i]));
           const results = await Promise.allSettled(
             includesList.map(async (inc) => {
               const src = await client.getObjectSource(inc.uri);
@@ -2017,7 +2051,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           );
           for (const result of results) {
             if (result.status === "fulfilled" && result.value.source) {
-              includesList[includesList.indexOf(includesList.find(i => i.uri === result.value.uri)!)] = result.value;
+              const idx = includeUriToIndex.get(result.value.uri);
+              if (idx !== undefined) includesList[idx] = result.value;
               allSourceTexts.push(result.value.source);
               includeCount++;
             }
@@ -2210,7 +2245,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        // 5. Build structured report
+        // 5. Token budget guard for large objects
+        const MAX_ANALYZE_CHARS = 150_000;
+        const combinedLength = allSourceTexts.reduce((sum, s) => sum + s.length, 0);
+        if (combinedLength > MAX_ANALYZE_CHARS) {
+          // Truncate allSourceTexts to fit budget, keeping main source intact
+          let charBudget = MAX_ANALYZE_CHARS;
+          for (let i = 0; i < allSourceTexts.length; i++) {
+            if (allSourceTexts[i].length <= charBudget) {
+              charBudget -= allSourceTexts[i].length;
+            } else {
+              allSourceTexts[i] = allSourceTexts[i].slice(0, charBudget) + "\n... (abgeschnitten)";
+              allSourceTexts.splice(i + 1);
+              break;
+            }
+          }
+          sections.push(`\n⚠️ Quellcode auf ${MAX_ANALYZE_CHARS.toLocaleString()} Zeichen begrenzt (gesamt: ${combinedLength.toLocaleString()}). Nutze read_abap_source für spezifische Includes.`);
+        }
+
+        // 6. Build structured report
         sections.push(`══ KONTEXT-ANALYSE: ${objectName.toUpperCase()} ══`);
 
         // Program structure
