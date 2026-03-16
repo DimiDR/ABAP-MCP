@@ -492,7 +492,31 @@ async function writeWorkflow(
         log.push("🚀 Aktivieren...");
         const segments = objectUrl.replace(/[?#].*$/, "").split("/").filter(Boolean);
         const name = segments[segments.length - 1] ?? objectUrl;
-        const activationResult = await client.activate(name, objectUrl);
+
+        // Include-Programme brauchen das Hauptprogramm als Kontext für die Aktivierung,
+        // da sie alleine nicht aktivierbar sind (referenzieren Variablen des Hauptprogramms).
+        let activationContext: string | undefined;
+        const isInclude = objectUrl.includes("/programs/includes/");
+        if (isInclude) {
+          const resolvedMain = resolveMainProgram(mainProgram);
+          if (resolvedMain) {
+            activationContext = resolvedMain;
+            log.push(`📎 Include — Aktivierung im Kontext von: ${mainProgram}`);
+          } else {
+            // Hauptprogramm automatisch ermitteln
+            try {
+              const mains = await client.mainPrograms(objectUrl);
+              if (mains.length > 0) {
+                activationContext = mains[0]["adtcore:uri"];
+                log.push(`📎 Include — Hauptprogramm automatisch ermittelt: ${mains[0]["adtcore:name"]}`);
+              }
+            } catch (mpErr) {
+              log.push(`⚠️  Hauptprogramm konnte nicht ermittelt werden: ${String(mpErr instanceof Error ? mpErr.message : mpErr)}`);
+            }
+          }
+        }
+
+        const activationResult = await client.activate(name, objectUrl, activationContext);
         if (!activationResult.success) {
           const msgs = formatActivationMessages(activationResult.messages);
           log.push(`❌ Aktivierung fehlgeschlagen — Code wurde gespeichert aber NICHT aktiviert.`);
