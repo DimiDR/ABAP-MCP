@@ -40,7 +40,7 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**43 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**44 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
@@ -50,7 +50,7 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | CREATE | 7 | Programme, Klassen, Interfaces, FuGr, CDS, Tabellen, Messages |
 | DELETE | 1 | Objekte löschen |
 | TEST | 2 | Unit Tests ausführen, Test-Includes erstellen |
-| QUALITY | 2 | Syntaxcheck, ATC-Prüfungen |
+| QUALITY | 3 | Syntaxcheck, ATC-Prüfungen, DDIC-Feldvalidierung |
 | DIAGNOSTICS | 4 | Short Dumps, Performance Traces |
 | TRANSPORT | 2 | Transport-Infos, Transport-Inhalte |
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
@@ -622,6 +622,77 @@ Startet eine ATC-Prüfung (ABAP Test Cockpit) für ein Objekt.
 | `checkVariant` | string | | Prüfvariante (Default: `DEFAULT`) |
 
 **Rückgabe:** Liste der Befunde mit Priorität (1=kritisch, 2=wichtig, 3=Hinweis), Kategorie, Beschreibung und Position.
+
+---
+
+#### `validate_ddic_references`
+
+Analysiert ABAP-Quellcode statisch und prüft alle referenzierten Tabellenfelder gegen die DDIC-Metadaten. Findet ungültige Feldnamen **vor** dem Schreiben des Codes und verhindert so Trial-and-Error-Zyklen mit "No component exists"-Syntaxfehlern.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `source` | string | ✓ | ABAP-Quellcode der zu prüfenden Programmlogik |
+
+**Erkannte Patterns:**
+
+- `TYPE tablename-fieldname` — Feldtypreferenzen
+- `LIKE tablename-fieldname` — Feldähnlichkeitsreferenzen
+
+**Filter & Exceptions:**
+
+Die Validierung ignoriert automatisch:
+- Lokale Variablen-Namen (lt_*, ls_*, lv_*, gs_*, etc.) als Tabellennamen
+- ABAP Built-in Typen (C, N, I, F, P, X, D, T, STRING, XSTRING)
+- ABAP-interne Typen (ABAP_*, etc.)
+
+**Rückgabe:**
+
+Bei gültigen Feldern:
+```
+✅ Keine DDIC-Tabellen-Feldreferenzen gefunden. Kein Validierungsbedarf.
+```
+
+oder
+
+```
+🔍 DDIC-Feldvalidierung für 2 Tabellen/Strukturen:
+  ✅ T001: 1 referenzierte Felder geprüft
+  ✅ BKPF: 2 referenzierte Felder geprüft
+
+✅ Alle 3 Feldreferenzen sind valide.
+```
+
+Bei ungültigen Feldern:
+```
+❌ 1 ungültige Feldreferenzen gefunden:
+  ❌ T001-ABKRS: Feld nicht gefunden (Tabelle hat 20 Felder)
+
+⚠️ Diese Felder existieren nicht in der DDIC — korrigiere die Feldnamen bevor du write_abap_source aufrufst!
+💡 Tipp: Nutze get_ddic_element mit dem Tabellennamen um alle verfügbaren Felder zu sehen.
+```
+
+**Empfohlener Workflow:**
+
+```
+1. Schreibe deinen geplanten ABAP-Code (lokal)
+2. Rufe validate_ddic_references(source="...") auf
+3. Behebe alle gefundenen Feldnamen-Fehler
+4. Rufe write_abap_source auf (sollte jetzt ohne Fehler aktiviert werden)
+```
+
+**Beispiel:**
+
+```abap
+CODE mit Fehler:
+DATA lv_bukrs TYPE T001-BUKRS.     ✅ Valid — BUKRS existiert
+DATA lv_foo TYPE T001-ABKRS.       ❌ Invalid — ABKRS existiert NICHT
+
+→ validate_ddic_references() findet den Fehler VOR write_abap_source
+```
+
+> **Hinweis:** Dieses Tool ist hilfreich um DDIC-Fehler früh zu erkennen, ersetzt aber nicht den kompletten Syntaxcheck durch `run_syntax_check` oder `write_abap_source`.
 
 ---
 

@@ -297,6 +297,9 @@ const S_RunAtc = z.object({
   objectUrl:  z.string().describe("ADT-URL des zu prüfenden Objekts"),
   checkVariant: z.string().default("DEFAULT").optional().describe("ATC-Prüfvariante (Default: DEFAULT)"),
 });
+const S_ValidateDdic = z.object({
+  source: z.string().describe("ABAP-Quellcode der zu prüfenden Programmlogik"),
+});
 
 // --- DIAGNOSTICS ---
 const S_GetDumps = z.object({
@@ -987,6 +990,7 @@ async function writeWorkflow(
   activate: boolean,
   skipCheck: boolean,
   mainProgram?: string,
+  onProgress?: (msg: string) => Promise<void>,
 ): Promise<{ success: boolean; log: string[]; syntaxErrors?: string[] }> {
   return withWriteLock(() => withStatefulSession(client, async () => {
     const log: string[] = [];
@@ -999,38 +1003,47 @@ async function writeWorkflow(
       lockHandle = lock.LOCK_HANDLE;
       if (!lockHandle) throw new Error("Lock fehlgeschlagen — kein Lock-Handle erhalten");
       log.push(`✅ Lock erhalten`);
+      await onProgress?.("🔒 Lock erhalten");
 
       log.push(`✏️  Quellcode schreiben (${source.length} Zeichen)...`);
       const sourceUrl = objectUrl.endsWith("/source/main") ? objectUrl : `${objectUrl}/source/main`;
       await client.setObjectSource(sourceUrl, source, lockHandle, transport || undefined);
       log.push("✅ Quellcode gespeichert");
+      await onProgress?.("✏️ Quellcode gespeichert");
 
-      // Unlock immediately after write — activation requires the object to be unlocked
-      log.push("🔓 Lock freigeben...");
-      try { await client.unLock(objectUrl, lockHandle); } catch { /* dropSession in finally will clean up */ }
+      // Phase 2: unlock + syntaxCheck in parallel (no lock needed for check)
+      log.push("🔓 Lock freigeben + 🔍 Syntaxcheck (parallel)...");
+      const resolvedMain = resolveMainProgram(mainProgram) ?? objectUrl;
+      const [, syntaxRes] = await Promise.all([
+        client.unLock(objectUrl, lockHandle).catch((e) => {
+          log.push(`⚠️ Unlock fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
+        }),
+        !skipCheck
+          ? client.syntaxCheck(objectUrl, resolvedMain, source).catch((e) => {
+              log.push(`⚠️ Syntaxcheck fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
+              return null; // null = check failed
+            })
+          : Promise.resolve(undefined),
+      ]);
       lockHandle = undefined;
       log.push("✅ Lock freigegeben");
 
-      // Phase 2: syntax check + activate (no lock needed)
-      if (!skipCheck) {
-        log.push("🔍 Syntaxcheck...");
-        const resolvedMain = resolveMainProgram(mainProgram) ?? objectUrl;
-        try {
-          const res = await client.syntaxCheck(objectUrl, resolvedMain, source);
-          const errs = (Array.isArray(res) ? res : []).filter(
-            (m: { severity: string }) => ["E", "A"].includes(m.severity));
-          if (errs.length > 0) {
-            const msgs = errs.map((e: { text: string; line?: number }) => `  Zeile ${e.line ?? "?"}: ${e.text}`);
-            log.push(`❌ ${errs.length} Syntaxfehler — Code NICHT aktiviert.`);
-            log.push("👉 Bitte korrigiere die Fehler und rufe write_abap_source erneut auf!");
-            return { success: false, log, syntaxErrors: msgs };
-          }
-        } catch (syntaxErr) {
-          log.push(`⚠️  Syntaxcheck-Aufruf fehlgeschlagen: ${String(syntaxErr instanceof Error ? syntaxErr.message : syntaxErr)}`);
+      // Process syntaxRes (undefined = skipped, null = error, array = result)
+      if (!skipCheck && syntaxRes !== undefined) {
+        if (syntaxRes === null) {
           log.push("👉 Syntaxcheck übersprungen — Code wurde gespeichert. Bitte manuell prüfen.");
           return { success: false, log };
         }
+        const errs = (Array.isArray(syntaxRes) ? syntaxRes : []).filter(
+          (m: { severity: string }) => ["E", "A"].includes(m.severity));
+        if (errs.length > 0) {
+          const msgs = errs.map((e: { text: string; line?: number }) => `  Zeile ${e.line ?? "?"}: ${e.text}`);
+          log.push(`❌ ${errs.length} Syntaxfehler — Code NICHT aktiviert.`);
+          log.push("👉 Bitte korrigiere die Fehler und rufe write_abap_source erneut auf!");
+          return { success: false, log, syntaxErrors: msgs };
+        }
         log.push("✅ Syntaxcheck OK");
+        await onProgress?.("🔍 Syntaxcheck OK — aktiviere...");
       }
 
       if (activate) {
@@ -1075,6 +1088,7 @@ async function writeWorkflow(
         } else {
           log.push("✅ Aktiviert");
         }
+        await onProgress?.("✅ Aktiviert");
       }
 
       return { success: true, log };
@@ -1119,7 +1133,9 @@ const TOOLS: ToolDef[] = [
   { name: "write_abap_source",
     description: "Schreibt Quellcode in ein bestehendes ABAP-Objekt und aktiviert es. Führt automatisch den vollständigen ADT-Workflow aus: lock → write → syntax check → activate → unlock. " +
       "⚠️ WICHTIG: Nach dem Aufruf MUSS das Objekt aktiviert sein. Wenn Syntax- oder Aktivierungsfehler auftreten, analysiere die Fehlermeldungen, korrigiere den Quellcode und rufe write_abap_source erneut auf. " +
-      "Wiederhole diesen Zyklus bis die Aktivierung erfolgreich ist. Gib niemals auf bevor der Code aktiviert ist! ⚠️ Erfordert ALLOW_WRITE=true.",
+      "Wiederhole diesen Zyklus bis die Aktivierung erfolgreich ist. Gib niemals auf bevor der Code aktiviert ist! " +
+      "**Vor dem ersten Schreiben:** Rufe `validate_ddic_references` mit dem geplanten Code auf, um ungültige Feldnamen frühzeitig zu erkennen und 'No component exists'-Syntaxfehler zu vermeiden. " +
+      "⚠️ Erfordert ALLOW_WRITE=true.",
     schema: S_WriteSource },
   { name: "activate_abap_object",
     description: "Aktiviert ein bereits gespeichertes ABAP-Objekt. Nützlich nach manuellen Änderungen oder zur Reaktivierung nach Fehlern. ⚠️ Erfordert ALLOW_WRITE=true.",
@@ -1174,6 +1190,14 @@ const TOOLS: ToolDef[] = [
   { name: "run_atc_check",
     description: "Startet eine ATC-Prüfung (ABAP Test Cockpit) für ein Objekt. Liefert Code-Qualitätsfunde mit Priorität, Kategorie und Beschreibung.",
     schema: S_RunAtc },
+  { name: "validate_ddic_references",
+    description:
+      "Analysiert ABAP-Quellcode statisch und prüft alle referenzierten Tabellenfelder " +
+      "(TYPE tabelle-feld, LIKE tabelle-feld) gegen die DDIC-Metadaten. " +
+      "Gibt eine Liste ungültiger Feldnamen zurück. " +
+      "⚡ Empfohlen vor write_abap_source aufzurufen um 'No component exists'-Fehler zu vermeiden. " +
+      "Prüft alle ABAP-Standardmuster: TYPE/LIKE tab-field, SELECT-FROM, struct-field-Zugriffe.",
+    schema: S_ValidateDdic },
 
   // ── DIAGNOSTICS ─────────────────────────────────────────────────────────
   { name: "get_short_dumps",
@@ -1274,7 +1298,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
                 "create_message_class"],
   DELETE:      ["delete_abap_object"],
   TEST:        ["run_unit_tests", "create_test_include"],
-  QUALITY:     ["run_syntax_check", "run_atc_check"],
+  QUALITY:     ["run_syntax_check", "run_atc_check", "validate_ddic_references"],
   DIAGNOSTICS: ["get_short_dumps", "get_short_dump_detail", "get_traces", "get_trace_detail"],
   TRANSPORT:   ["get_transport_info", "get_transport_objects", "create_transport"],
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
@@ -1417,7 +1441,7 @@ Beim Coding folgende Prinzipien beachten:
 });
 
 // ── CALL TOOL ───────────────────────────────────────────────────────────────
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const client = await getClient();
 
@@ -1600,12 +1624,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "write_abap_source": {
         assertWriteEnabled();
         const p = S_WriteSource.parse(args);
+        const progressToken = (extra as { _meta?: { progressToken?: string | number } })._meta?.progressToken;
+        let step = 0;
+        const totalSteps = 4;
+        async function reportProgress(message: string) {
+          if (progressToken === undefined) return;
+          step++;
+          await (extra as { sendNotification: (n: object) => Promise<void> }).sendNotification({
+            method: "notifications/progress",
+            params: { progressToken, progress: step, total: totalSteps, message },
+          });
+        }
         const r = await writeWorkflow(
           client, p.objectUrl, p.source,
           p.transport ?? cfg.defaultTransport,
           p.activateAfterWrite ?? true,
           p.skipSyntaxCheck ?? false,
           p.mainProgram,
+          reportProgress,
         );
         const body = r.log.join("\n") + (r.syntaxErrors ? "\n\nSyntaxfehler:\n" + r.syntaxErrors.join("\n") : "");
         if (r.success) {
@@ -1816,6 +1852,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (findings.length === 0) return ok("Keine ATC-Befunde — Objekt ist sauber.");
         const summary = `ATC: ${findings.length} Objekte mit Befunden`;
         return ok(`${summary}\n\n${JSON.stringify(worklist, null, 2)}`);
+      }
+
+      // ── validate_ddic_references ────────────────────────────────────────
+      case "validate_ddic_references": {
+        const p = S_ValidateDdic.parse(args);
+        const source = p.source;
+
+        // Extrahiere alle "TABLE-FIELD"-Referenzen aus gängigen ABAP-Patterns
+        const tableFieldMap = new Map<string, Set<string>>(); // tableName → Set<fieldName>
+
+        const patterns = [
+          // TYPE tablename-fieldname
+          /\bTYPE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
+          // LIKE tablename-fieldname
+          /\bLIKE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
+        ];
+
+        for (const pattern of patterns) {
+          let m: RegExpExecArray | null;
+          while ((m = pattern.exec(source)) !== null) {
+            const [, table, field] = m;
+            const t = table.toUpperCase();
+            const f = field.toUpperCase();
+            // Skip lokale Variablen (lt_*, ls_*, lv_*, etc.) als Tabellenname
+            if (/^[LG][TSVO]_/.test(t) || /^[LG]S_/.test(t)) continue;
+            // Skip ABAP Built-in Typen (C, N, I, F, P, X, D, T, STRING, XSTRING)
+            if (/^(C|N|I|F|P|X|D|T|STRING|XSTRING|ABAP_.*)$/.test(t)) continue;
+            if (!tableFieldMap.has(t)) tableFieldMap.set(t, new Set());
+            tableFieldMap.get(t)!.add(f);
+          }
+        }
+
+        if (tableFieldMap.size === 0) {
+          return ok("✅ Keine DDIC-Tabellen-Feldreferenzen gefunden. Kein Validierungsbedarf.");
+        }
+
+        const tableNames = [...tableFieldMap.keys()];
+        const results: string[] = [];
+        const errors: string[] = [];
+        let validCount = 0;
+        let errorCount = 0;
+
+        await Promise.all(tableNames.map(async (tableName) => {
+          try {
+            const ddic = await client.ddicElement(tableName);
+            // Felder aus children extrahieren
+            const knownFields = new Set(
+              (ddic.children ?? []).map((c: { name: string }) => c.name.toUpperCase())
+            );
+            const referencedFields = tableFieldMap.get(tableName)!;
+
+            for (const field of referencedFields) {
+              if (knownFields.has(field)) {
+                validCount++;
+              } else {
+                errorCount++;
+                errors.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden (Tabelle hat ${knownFields.size} Felder)`);
+              }
+            }
+
+            results.push(`  ✅ ${tableName}: ${referencedFields.size} referenzierte Felder geprüft`);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            // Nicht als Fehler werten wenn Tabelle nicht auflösbar (könnte ein Custom-Type-Alias sein)
+            results.push(`  ⚠️  ${tableName}: DDIC nicht auflösbar — ${msg.substring(0, 80)}`);
+          }
+        }));
+
+        const summary = [
+          `🔍 DDIC-Feldvalidierung für ${tableNames.length} Tabellen/Strukturen:`,
+          ...results.sort(),
+          "",
+        ];
+
+        if (errorCount > 0) {
+          return err([
+            ...summary,
+            `❌ ${errorCount} ungültige Feldreferenzen gefunden:`,
+            ...errors.sort(),
+            "",
+            "⚠️ Diese Felder existieren nicht in der DDIC — korrigiere die Feldnamen bevor du write_abap_source aufrufst!",
+            "💡 Tipp: Nutze get_ddic_element mit dem Tabellennamen um alle verfügbaren Felder zu sehen.",
+          ].join("\n"));
+        }
+
+        return ok([
+          ...summary,
+          `✅ Alle ${validCount} Feldreferenzen sind valide.`,
+        ].join("\n"));
       }
 
       // ── get_short_dumps ─────────────────────────────────────────────────
