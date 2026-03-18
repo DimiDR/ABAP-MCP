@@ -40,26 +40,26 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**44 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**45 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
 | SEARCH | 1 | Objektsuche mit Wildcards |
-| READ | 6 | Quellcode, Metadaten, Where-Used, Code Completion, Kontext-Analyse |
-| WRITE | 4 | Quellcode schreiben, aktivieren, formatieren |
+| READ | 10 | Quellcode, Metadaten, Where-Used, Code Completion, Definitionen, Revisionen, DDIC, Tabellen, Fix-Vorschläge, Kontext-Analyse |
+| WRITE | 4 | Quellcode schreiben, aktivieren, Massen-Aktivierung, formatieren |
 | CREATE | 7 | Programme, Klassen, Interfaces, FuGr, CDS, Tabellen, Messages |
 | DELETE | 1 | Objekte löschen |
 | TEST | 2 | Unit Tests ausführen, Test-Includes erstellen |
 | QUALITY | 3 | Syntaxcheck, ATC-Prüfungen, DDIC-Feldvalidierung |
 | DIAGNOSTICS | 4 | Short Dumps, Performance Traces |
-| TRANSPORT | 2 | Transport-Infos, Transport-Inhalte |
+| TRANSPORT | 3 | Transport-Infos, Transport-Inhalte, Transport erstellen |
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
-| QUERY | 2 | SELECT-Statements, ABAP-Snippets ausführen |
-| DOCUMENTATION | 3 | SAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices |
+| QUERY | 3 | SELECT-Statements, inaktive Objekte, ABAP-Snippets ausführen |
+| DOCUMENTATION | 5 | ABAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices, Clean ABAP, ABAP-Syntax |
 | META | 1 | Tool-Finder für dynamische Tool-Registrierung |
 | PROMPTS | 1 | `abap_develop` — Intelligenter ABAP-Entwicklungsworkflow |
 
-> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 8 Kern-Tools geladen.
+> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 9 Kern-Tools geladen.
 > Weitere Tools werden on-demand über `find_tools` aktiviert — das spart ~75-80% Tokens pro `tools/list`-Aufruf.
 
 ---
