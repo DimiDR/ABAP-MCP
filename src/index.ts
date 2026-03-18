@@ -2696,6 +2696,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           );
         }
 
+        // Prüfe ob der /runs-Endpoint vom System unterstützt wird (ADT Discovery)
+        try {
+          const disc = await client.httpClient.request("/sap/bc/adt/core/discovery", { method: "GET" });
+          const body = typeof disc.body === "string" ? disc.body : "";
+          if (!body.includes("programs/runs") && !body.includes("program/runs")) {
+            return err(
+              "❌ execute_abap_snippet is not supported on this system.\n" +
+              "The ADT program execution endpoint (/runs) was not found in the system's ADT Discovery document.\n" +
+              "This endpoint may not be available on all on-premise systems.\n\n" +
+              "Alternatives:\n" +
+              "  • search_abap_syntax — search source code for patterns\n" +
+              "  • run_select_query — run SELECT queries on database tables\n" +
+              "  • Use SE38/SE80 in SAP GUI for direct program execution"
+            );
+          }
+        } catch { /* best effort — proceed and let the actual call fail if needed */ }
+
         // Sicherstellen dass Code ausführbar ist (beginnt mit REPORT/PROGRAM)
         const trimmed = p.source.trim();
         const snippetSource = /^(REPORT|PROGRAM)\s/i.test(trimmed)
