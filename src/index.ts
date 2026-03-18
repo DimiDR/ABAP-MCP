@@ -25,6 +25,8 @@
  */
 
 import "dotenv/config";
+import * as fs from "fs";
+import * as path from "path";
 import { ADTClient, createSSLConfig, session_types, isAdtError } from "abap-adt-api";
 import type { ActivationResult, ActivationResultMessage, ClientOptions } from "abap-adt-api";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -100,6 +102,96 @@ async function getClient(): Promise<ADTClient> {
 // ============================================================================
 
 let writeLock: Promise<void> = Promise.resolve();
+
+// Cache für Clean ABAP Styleguide (lazy-loaded, lokale Dateien bevorzugt)
+const CLEAN_ABAP_LOCAL_DIR = path.resolve(process.cwd(), "clean-abap");
+const CLEAN_ABAP_URL = "https://raw.githubusercontent.com/SAP/styleguides/main/clean-abap/CleanABAP.md";
+
+// Gecachte Abschnitte: Dateiname → Inhalt
+let cleanAbapSectionCache: Map<string, string> | null = null;
+
+/** Lädt alle Clean ABAP Markdown-Dateien (lokal bevorzugt, GitHub als Fallback) */
+async function loadCleanAbapFiles(): Promise<Map<string, string>> {
+  if (cleanAbapSectionCache) return cleanAbapSectionCache;
+
+  const files = new Map<string, string>();
+
+  // Lokale Dateien verwenden wenn vorhanden
+  if (fs.existsSync(CLEAN_ABAP_LOCAL_DIR)) {
+    const readMd = (filePath: string, label: string) => {
+      try {
+        files.set(label, fs.readFileSync(filePath, "utf-8"));
+      } catch { /* ignorieren */ }
+    };
+
+    readMd(path.join(CLEAN_ABAP_LOCAL_DIR, "CleanABAP.md"), "CleanABAP");
+
+    const subDir = path.join(CLEAN_ABAP_LOCAL_DIR, "sub-sections");
+    if (fs.existsSync(subDir)) {
+      for (const f of fs.readdirSync(subDir)) {
+        if (f.endsWith(".md")) {
+          readMd(path.join(subDir, f), `sub-sections/${f.replace(".md", "")}`);
+        }
+      }
+    }
+  }
+
+  // Fallback: GitHub
+  if (files.size === 0) {
+    const resp = await fetch(CLEAN_ABAP_URL, {
+      signal: AbortSignal.timeout(20_000),
+      headers: { "User-Agent": "ABAP-MCP-Server/2.0" },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} beim Laden des Clean ABAP Guides`);
+    files.set("CleanABAP", await resp.text());
+  }
+
+  cleanAbapSectionCache = files;
+  return files;
+}
+
+/** Zerlegt einen Markdown-Text in Abschnitte anhand von ## Überschriften */
+function parseMarkdownSections(md: string): Array<{ heading: string; content: string }> {
+  const sections: Array<{ heading: string; content: string }> = [];
+  const lines = md.split("\n");
+  let currentHeading = "(Intro)";
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const h2 = line.match(/^##\s+(.+)/);
+    if (h2) {
+      if (currentLines.length > 0)
+        sections.push({ heading: currentHeading, content: currentLines.join("\n").trim() });
+      currentHeading = h2[1].trim();
+      currentLines = [];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  if (currentLines.length > 0)
+    sections.push({ heading: currentHeading, content: currentLines.join("\n").trim() });
+  return sections;
+}
+
+/** Sucht im Clean ABAP Guide nach dem relevantesten Abschnitt */
+function searchCleanAbapSections(
+  sections: Array<{ heading: string; content: string }>,
+  query: string,
+  maxResults = 3
+): Array<{ heading: string; excerpt: string; score: number }> {
+  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  return sections
+    .map(s => {
+      const haystack = (s.heading + "\n" + s.content).toLowerCase();
+      const score = terms.reduce((acc, t) => acc + (haystack.split(t).length - 1), 0);
+      // Abschnitt auf max. ~100 Zeilen kürzen
+      const excerpt = s.content.split("\n").slice(0, 100).join("\n").trim();
+      return { heading: s.heading, excerpt, score };
+    })
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults);
+}
 
 function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   const prev = writeLock;
@@ -402,6 +494,21 @@ const S_GetAbapClassDoc = z.object({
 const S_GetModuleBestPractices = z.object({
   module: z.enum(["FI", "CO", "MM", "SD", "PP", "PM", "QM", "HR", "HCM", "PS", "WM", "EWM", "BASIS", "BC", "ABAP"])
     .describe("SAP-Modul (z.B. FI, MM, SD, ABAP)"),
+});
+const S_SearchCleanAbap = z.object({
+  query: z.string().describe(
+    "Suchanfrage im SAP Clean ABAP Styleguide (z.B. 'naming conventions', 'error handling', 'SELECT', 'method length', 'comments'). " +
+    "Gibt die relevantesten Abschnitte aus dem offiziellen github.com/SAP/styleguides Clean ABAP Guide zurück."
+  ),
+  maxResults: z.number().int().min(1).max(5).optional()
+    .describe("Maximale Anzahl Abschnitte (1–5, Standard: 2)"),
+});
+const S_SearchAbapSyntax = z.object({
+  query: z.string().describe(
+    "Freitext-Suchanfrage zur ABAP-Syntax (z.B. 'SELECT UP TO ROWS', 'LOOP AT clause order', 'READ TABLE WITH KEY'). " +
+    "Das Tool erkennt das Haupt-Keyword, lädt die offizielle SAP-Dokumentationsseite und gibt den relevanten Syntaxabschnitt zurück."
+  ),
+  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
 });
 
 // ============================================================================
@@ -1427,6 +1534,15 @@ const TOOLS: ToolDef[] = [
   { name: "get_module_best_practices",
     description: "Liefert modulspezifische SAP ABAP Best Practices (wichtige Tabellen, empfohlene BAPIs/Klassen, Coding-Richtlinien, häufige Fehler, S/4HANA-Migrationshinweise). Module: FI, CO, MM, SD, PP, PM, QM, HR, HCM, PS, WM, EWM, BASIS, BC, ABAP.",
     schema: S_GetModuleBestPractices },
+  { name: "search_clean_abap",
+    description: "Durchsucht den offiziellen SAP Clean ABAP Styleguide (github.com/SAP/styleguides) nach Best Practices, Namenskonventionen, Coding-Richtlinien und Anti-Patterns. " +
+      "Gibt die relevantesten Abschnitte zurück. Vor dem Schreiben von neuem Code aufrufen um Clean ABAP Konventionen einzuhalten.",
+    schema: S_SearchCleanAbap },
+  { name: "search_abap_syntax",
+    description: "Sucht die offizielle ABAP-Syntaxdokumentation von help.sap.com anhand einer Freitext-Anfrage (z.B. 'SELECT UP TO ROWS', 'LOOP AT clause order'). " +
+      "Erkennt das Haupt-Keyword automatisch, lädt die Dokumentationsseite und gibt den relevanten Syntaxabschnitt zurück. " +
+      "VOR dem Schreiben von ABAP-Code aufrufen um korrekte Syntax sicherzustellen.",
+    schema: S_SearchAbapSyntax },
 ];
 
 // ============================================================================
@@ -1449,7 +1565,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   TRANSPORT:   ["get_transport_info", "get_transport_objects", "create_transport"],
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
   QUERY:       ["run_select_query", "get_inactive_objects", "execute_abap_snippet"],
-  DOCUMENTATION: ["get_abap_keyword_doc", "get_abap_class_doc", "get_module_best_practices"],
+  DOCUMENTATION: ["get_abap_keyword_doc", "get_abap_class_doc", "get_module_best_practices", "search_abap_syntax", "search_clean_abap"],
 };
 
 const CORE_TOOL_NAMES = new Set([
@@ -1582,8 +1698,9 @@ Beim Coding folgende Prinzipien beachten:
 
 ### Schritt 5: Implementierung
 ⚠️ **PFLICHT vor dem ersten write_abap_source-Aufruf:**
-1. Schreibe den geplanten Code auf Basis der in Schritt 4b nachgeschlagenen echten Feldnamen.
-2. Rufe \`validate_ddic_references(source=<geplanter_code>)\` auf — als finale Absicherung.
+1. Für jedes ABAP-Statement das du verwenden willst (SELECT, LOOP AT, READ TABLE, …): Rufe \`search_abap_syntax(query=<statement>)\` auf um die korrekte Syntax von help.sap.com zu verifizieren.
+2. Schreibe den geplanten Code auf Basis der in Schritt 4b nachgeschlagenen echten Feldnamen und der in Schritt 5.1 verifizierten Syntax.
+3. Rufe \`validate_ddic_references(source=<geplanter_code>)\` auf — als finale Absicherung.
 3. Falls Fehler gemeldet werden: Korrigiere die Feldnamen anhand der Vorschläge. NIEMALS write_abap_source aufrufen, wenn validate_ddic_references Fehler meldet!
 4. Erst wenn validate_ddic_references ✅ meldet → \`write_abap_source\` aufrufen.
 
@@ -2773,6 +2890,158 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           return err(`Dokumentation fuer '${p.keyword}' nicht gefunden (${result.content}).\nVersuchte URL: ${result.url}`);
         }
         return ok(`${result.content}\n\n---\nQuelle: ${result.url}`);
+      }
+
+      // ── search_clean_abap ───────────────────────────────────────────────
+      case "search_clean_abap": {
+        const p = S_SearchCleanAbap.parse(args);
+        const files = await loadCleanAbapFiles();
+        const source = files.size === 1 && fs.existsSync(CLEAN_ABAP_LOCAL_DIR)
+          ? "lokal"
+          : fs.existsSync(CLEAN_ABAP_LOCAL_DIR) ? "lokal" : "GitHub";
+
+        // Alle Dateien in Abschnitte zerlegen und gemeinsam durchsuchen
+        const allSections: Array<{ heading: string; content: string; file: string }> = [];
+        for (const [fileName, content] of files) {
+          for (const s of parseMarkdownSections(content)) {
+            allSections.push({ ...s, file: fileName });
+          }
+        }
+
+        const terms = p.query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+        const scored = allSections
+          .map(s => {
+            const haystack = (s.heading + "\n" + s.content).toLowerCase();
+            const score = terms.reduce((acc, t) => acc + (haystack.split(t).length - 1), 0);
+            const excerpt = s.content.split("\n").slice(0, 80).join("\n").trim();
+            return { heading: s.heading, file: s.file, excerpt, score };
+          })
+          .filter(r => r.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, p.maxResults ?? 2);
+
+        if (scored.length === 0) {
+          const topics = [...new Set(allSections.map(s => s.heading))].slice(0, 20).join(", ");
+          return err(
+            `Keine Treffer für '${p.query}' im Clean ABAP Guide (${files.size} Dateien durchsucht).\n` +
+            `Verfügbare Themen (Auswahl): ${topics}`
+          );
+        }
+
+        const output = scored.map(r =>
+          `## ${r.heading}  _(${r.file})_\n\n${r.excerpt}`
+        ).join("\n\n---\n\n");
+
+        return ok(
+          `# Clean ABAP Guide — "${p.query}" (Quelle: ${source}, ${files.size} Dateien)\n\n${output}\n\n` +
+          `---\n📖 ${CLEAN_ABAP_LOCAL_DIR}`
+        );
+      }
+
+      // ── search_abap_syntax ──────────────────────────────────────────────
+      case "search_abap_syntax": {
+        const p = S_SearchAbapSyntax.parse(args);
+        const version = p.version ?? cfg.sapAbapVersion;
+        const query = p.query.trim();
+
+        // Bekannte Compound-Keywords zuerst prüfen (Reihenfolge: länger vor kürzer)
+        const COMPOUND_KEYWORDS: [RegExp, string][] = [
+          [/\bREAD\s+TABLE\b/i,          "read_table"],
+          [/\bLOOP\s+AT\b/i,             "loop_at"],
+          [/\bINSERT\s+LINES\b/i,        "insert_lines"],
+          [/\bDELETE\s+ADJACENT\b/i,     "delete_adjacent_duplicates"],
+          [/\bSORT\b/i,                  "sort"],
+          [/\bCOLLECT\b/i,               "collect"],
+          [/\bMODIFY\b/i,               "modify"],
+          [/\bAPPEND\b/i,               "append"],
+          [/\bCONCAT\w*\b/i,            "concatenate"],
+          [/\bSELECT\b/i,               "select"],
+          [/\bUPDATE\b/i,               "update"],
+          [/\bINSERT\b/i,               "insert"],
+          [/\bDELETE\b/i,               "delete"],
+          [/\bOPEN\s+CURSOR\b/i,        "open_cursor"],
+          [/\bFETCH\s+NEXT\b/i,         "fetch_next_cursor"],
+          [/\bCALL\s+FUNCTION\b/i,       "call_function"],
+          [/\bCALL\s+METHOD\b/i,         "call_method"],
+          [/\bRAISE\s+EXCEPTION\b/i,     "raise_exception"],
+          [/\bFIELD-SYMBOL\b/i,          "field-symbols"],
+          [/\bASSIGN\b/i,               "assign"],
+          [/\bIF\b/i,                   "if"],
+          [/\bCASE\b/i,                 "case"],
+          [/\bDO\b/i,                   "do"],
+          [/\bWHILE\b/i,               "while"],
+          [/\bFORM\b/i,                 "form"],
+          [/\bMETHOD\b/i,              "method"],
+          [/\bCLASS\b/i,               "class"],
+          [/\bINTERFACE\b/i,           "interface"],
+          [/\bTRY\b/i,                 "try"],
+          [/\bRAISE\b/i,               "raise"],
+          [/\bWRITE\b/i,               "write"],
+          [/\bMESSAGE\b/i,             "message"],
+        ];
+
+        let keywordSlug: string | null = null;
+        for (const [pattern, slug] of COMPOUND_KEYWORDS) {
+          if (pattern.test(query)) { keywordSlug = slug; break; }
+        }
+
+        // Fallback: erstes Wort der Anfrage als Keyword
+        if (!keywordSlug) {
+          keywordSlug = query.split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9_]/g, "");
+        }
+
+        // URL-Varianten ausprobieren
+        const v = version === "latest" ? "latest" : version;
+        const base = `https://help.sap.com/doc/abapdocu_${v}_index_htm/${v}/en-US/`;
+        const urlVariants = [
+          `${base}abap${keywordSlug}.htm`,
+          `${base}abap${keywordSlug.replace(/_/g, "")}.htm`,
+          `${base}abap${keywordSlug}_clause.htm`,
+          `${base}abap${keywordSlug}_clauses.htm`,
+        ];
+
+        let result: { success: boolean; content: string; url: string } | null = null;
+        for (const url of urlVariants) {
+          const r = await fetchSapDocumentation(url);
+          if (r.success) { result = r; break; }
+        }
+
+        if (!result || !result.success) {
+          return err(
+            `Keine Dokumentation für '${query}' gefunden.\n` +
+            `Tipp: Versuche get_abap_keyword_doc mit dem exakten Keyword (z.B. "${keywordSlug.replace(/_/g, " ").toUpperCase()}").\n` +
+            `Versuchte URLs:\n${urlVariants.join("\n")}`
+          );
+        }
+
+        // Relevanten Abschnitt herausfiltern: suche nach query-Begriffen im Content
+        const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+        const lines = result.content.split("\n");
+        let bestSection = "";
+
+        // Finde den Abschnitt mit den meisten Treffern der Suchbegriffe
+        let bestScore = -1;
+        let bestStart = 0;
+        const WINDOW = 60;
+        for (let i = 0; i < lines.length; i++) {
+          const window = lines.slice(i, i + WINDOW).join("\n").toLowerCase();
+          const score = queryTerms.reduce((s, t) => s + (window.split(t).length - 1), 0);
+          if (score > bestScore) { bestScore = score; bestStart = i; }
+        }
+
+        if (bestScore > 0) {
+          // Etwas vor dem Treffer beginnen (Kontext)
+          const start = Math.max(0, bestStart - 5);
+          bestSection = lines.slice(start, start + WINDOW + 10).join("\n").trim();
+        } else {
+          // Kein spezifischer Treffer → ersten Teil der Doku zurückgeben
+          bestSection = lines.slice(0, 80).join("\n").trim();
+        }
+
+        return ok(
+          `# ABAP Syntax: ${query}\n\n${bestSection}\n\n` +
+          `---\n📖 Vollständige Dokumentation: ${result.url}`
+        );
       }
 
       // ── get_abap_class_doc ─────────────────────────────────────────────
