@@ -193,6 +193,86 @@ function searchCleanAbapSections(
     .slice(0, maxResults);
 }
 
+// ============================================================================
+// CLEAN ABAP ANTI-PATTERN RULES (static analysis)
+// ============================================================================
+
+interface CleanAbapRule {
+  id: string;
+  pattern: RegExp;
+  message: string;
+  guidelineQuery: string;
+  category: "Names" | "Language" | "Tables" | "Strings" | "Methods" | "ErrorHandling";
+  multiline?: boolean;
+}
+
+const CLEAN_ABAP_RULES: CleanAbapRule[] = [
+  // Names
+  { id: "HUNGARIAN_NOTATION",
+    pattern: /^\s*DATA\s+[lg][vtso]_\w+/im,
+    message: "Hungarian notation prefix (e.g. lv_, lt_, gs_). Clean ABAP avoids type-encoding prefixes.",
+    guidelineQuery: "hungarian notation naming prefixes avoid encodings",
+    category: "Names" },
+  // Language
+  { id: "MOVE_STATEMENT",
+    pattern: /\bMOVE\s+\S+\s+TO\b/i,
+    message: "Obsolete MOVE ... TO. Use = operator instead.",
+    guidelineQuery: "MOVE obsolete assignment operator",
+    category: "Language" },
+  { id: "COMPUTE_STATEMENT",
+    pattern: /\bCOMPUTE\b/i,
+    message: "Obsolete COMPUTE statement. Use arithmetic expressions directly.",
+    guidelineQuery: "COMPUTE obsolete arithmetic",
+    category: "Language" },
+  { id: "ADD_SUBTRACT",
+    pattern: /\b(ADD|SUBTRACT)\s+\S+\s+TO\b/i,
+    message: "Obsolete ADD/SUBTRACT. Use += / -= operators.",
+    guidelineQuery: "ADD SUBTRACT obsolete arithmetic operators",
+    category: "Language" },
+  { id: "MULTIPLY_DIVIDE",
+    pattern: /\b(MULTIPLY|DIVIDE)\s+\S+\s+BY\b/i,
+    message: "Obsolete MULTIPLY/DIVIDE. Use *= / /= operators.",
+    guidelineQuery: "MULTIPLY DIVIDE obsolete arithmetic operators",
+    category: "Language" },
+  { id: "CALL_METHOD",
+    pattern: /\bCALL\s+METHOD\b/i,
+    message: "Old OO syntax CALL METHOD. Use functional call: object->method( ).",
+    guidelineQuery: "CALL METHOD obsolete functional style",
+    category: "Language" },
+  { id: "FORM_DEFINITION",
+    pattern: /^\s*FORM\s+\w+/im,
+    message: "FORM subroutine. Use methods in classes instead.",
+    guidelineQuery: "FORM subroutine obsolete methods classes",
+    category: "Language" },
+  // Strings
+  { id: "CONCATENATE_STATEMENT",
+    pattern: /\bCONCATENATE\b/i,
+    message: "CONCATENATE statement. Use string template |{ a }{ b }| instead.",
+    guidelineQuery: "CONCATENATE string template pipe operator",
+    category: "Strings" },
+  // Tables
+  { id: "SELECT_ENDSELECT",
+    pattern: /\bSELECT\b[\s\S]*?\bENDSELECT\b/i,
+    message: "SELECT...ENDSELECT loop. Use SELECT INTO TABLE @DATA(...) for bulk reads.",
+    guidelineQuery: "SELECT ENDSELECT loop INTO TABLE modern SQL",
+    category: "Tables",
+    multiline: true },
+  // Methods
+  { id: "CHECK_IN_METHOD",
+    pattern: /\bMETHOD\b[\s\S]*?\bCHECK\b/,
+    message: "CHECK statement inside METHOD body. Use IF ... RETURN instead.",
+    guidelineQuery: "CHECK RETURN method early exit",
+    category: "Methods",
+    multiline: true },
+  // Error handling
+  { id: "CALL_FUNCTION_SYSUBRC",
+    pattern: /CALL\s+FUNCTION\s+['"][^'"]+['"][\s\S]{0,300}?(?:IF\s+sy-subrc|WHEN\s+sy-subrc)/i,
+    message: "CALL FUNCTION followed by sy-subrc check. Use EXCEPTIONS + TRY/CATCH with CX_*.",
+    guidelineQuery: "sy-subrc CALL FUNCTION exceptions TRY CATCH error handling",
+    category: "ErrorHandling",
+    multiline: true },
+];
+
 function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   const prev = writeLock;
   let release: () => void;
@@ -296,8 +376,8 @@ const S_CodeCompletion = z.object({
 // --- WRITE ---
 const S_WriteSource = z.object({
   objectUrl:          z.string().describe("ADT URL without /source/main suffix"),
-  source:             z.string().optional().describe("Complete ABAP source code (mutually exclusive with sourcePath)"),
-  sourcePath:         z.string().optional().describe("Path to a local file containing the ABAP source code — avoids token cost of passing large source inline"),
+  source:             z.string().optional().describe("Complete ABAP source code — use only for short snippets (< 20 lines). For larger programs, write to a temp file and use 'sourcePath' instead."),
+  sourcePath:         z.string().optional().describe("PREFERRED: Path to a local file with the ABAP source. Write source to disk first (e.g. /tmp/zmy_prog.abap), then pass this path. Faster, cheaper, and avoids JSON escaping issues."),
   transport:          z.string().optional().describe("Transport request, e.g. DEVK900123"),
   activateAfterWrite: z.boolean().default(true).optional().describe("Activate after writing (default: true)"),
   skipSyntaxCheck:    z.boolean().default(false).optional().describe("Skip syntax check (not recommended)"),
@@ -505,6 +585,15 @@ const S_SearchCleanAbap = z.object({
   ),
   maxResults: z.number().int().min(1).max(5).optional()
     .describe("Maximum number of sections (1–5, default: 2)"),
+});
+const S_ReviewCleanAbap = z.object({
+  source: z.string().describe(
+    "ABAP source code to review for Clean ABAP compliance. " +
+    "Detects anti-patterns (Hungarian notation, obsolete statements, etc.) " +
+    "and returns findings with relevant Clean ABAP guideline excerpts."
+  ),
+  maxFindings: z.number().int().min(1).max(50).optional()
+    .describe("Maximum number of findings to report (1–50, default: 10)"),
 });
 const S_SearchAbapSyntax = z.object({
   query: z.string().describe(
@@ -1423,11 +1512,11 @@ const TOOLS: ToolDef[] = [
 
   // ── WRITE ───────────────────────────────────────────────────────────────
   { name: "write_abap_source",
-    description: "Writes source code to an existing ABAP object and activates it. Automatically executes the complete ADT workflow: lock → write → syntax check → activate → unlock. " +
-      "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, analyze the error messages, fix the source code and call write_abap_source again. " +
-      "Repeat this cycle at most 3 times. If activation is still not possible after 3 attempts, explain the problem to the user and ask for help instead of repeating endlessly. " +
-      "**Before the first write:** Call `validate_ddic_references` with the planned code to detect invalid field names early and avoid 'No component exists' syntax errors. " +
-      "Alternatively, pass 'sourcePath' with a local file path to avoid re-generating the source as inline JSON (recommended for large files). " +
+    description: "Writes source code to an existing ABAP object and activates it. Executes the full ADT workflow: lock → write → syntax check → activate → unlock.\n" +
+      "✅ PREFERRED: Use 'sourcePath' — write the source to a local temp file first (e.g. /tmp/zsource.abap), then pass the path. This is faster, cheaper, and avoids JSON escaping issues. " +
+      "Use inline 'source' only for very short snippets (< 20 lines).\n" +
+      "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, fix the source and retry — at most 3 times. If still failing, explain to the user.\n" +
+      "**Before the first write:** Call `validate_ddic_references` with the planned code to catch invalid field names early.\n" +
       "⚠️ Requires ALLOW_WRITE=true.",
     schema: S_WriteSource },
   { name: "activate_abap_object",
@@ -1582,6 +1671,15 @@ const TOOLS: ToolDef[] = [
       "Automatically identifies the main keyword, loads the documentation page and returns the relevant syntax section. " +
       "Call BEFORE writing ABAP code to ensure correct syntax.",
     schema: S_SearchAbapSyntax },
+  { name: "review_clean_abap",
+    description:
+      "Reviews ABAP source code for Clean ABAP compliance. " +
+      "Detects anti-patterns (Hungarian notation, MOVE/COMPUTE/CONCATENATE, FORM subroutines, " +
+      "SELECT...ENDSELECT loops, sy-subrc checks, CALL METHOD) and returns findings with " +
+      "relevant Clean ABAP guideline excerpts. " +
+      "No SAP system connection required — pure static analysis. " +
+      "Call on existing code before writing to understand current conventions.",
+    schema: S_ReviewCleanAbap },
 ];
 
 // ============================================================================
@@ -1599,7 +1697,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
                 "create_message_class"],
   DELETE:      ["delete_abap_object"],
   TEST:        ["run_unit_tests", "create_test_include"],
-  QUALITY:     ["run_syntax_check", "run_atc_check", "validate_ddic_references"],
+  QUALITY:     ["run_syntax_check", "run_atc_check", "validate_ddic_references", "review_clean_abap"],
   DIAGNOSTICS: ["get_short_dumps", "get_short_dump_detail", "get_traces", "get_trace_detail"],
   TRANSPORT:   ["get_transport_info", "get_transport_objects", "create_transport"],
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
@@ -1712,6 +1810,10 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 - When uncertain: search the SAP documentation (web search) for best practices.
 
 ### Step 3: Apply modern ABAP principles (Clean ABAP)
+**Before coding:** Call \`find_tools(category="QUALITY")\` if not yet done, then run
+\`review_clean_abap(source=<existing_code>)\` on the current source to identify existing
+anti-patterns and coding conventions before writing new code.
+
 Follow these principles when coding:
 - **Inline declarations**: DATA(lv_var), FIELD-SYMBOL(<fs>), NEW #(), VALUE #()
 - **String templates**: |Text { lv_var } more text| instead of CONCATENATE
@@ -3016,6 +3118,104 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         return ok(
           `# Clean ABAP Guide — "${p.query}" (source: ${source}, ${files.size} file(s))\n\n${output}\n\n` +
           `---\n📖 ${CLEAN_ABAP_LOCAL_DIR}`
+        );
+      }
+
+      // ── review_clean_abap ──────────────────────────────────────────────
+      case "review_clean_abap": {
+        const p = S_ReviewCleanAbap.parse(args);
+        const maxFindings = p.maxFindings ?? 10;
+        const sourceLines = p.source.split("\n");
+        const fullSource = p.source;
+
+        // Collect findings: deduplicate by rule.id, track first occurrence + count
+        const findingsMap = new Map<string, {
+          rule: CleanAbapRule;
+          line: number;
+          lineText: string;
+          count: number;
+        }>();
+
+        for (const rule of CLEAN_ABAP_RULES) {
+          if (rule.multiline) {
+            // Cross-line rules: scan full source
+            const match = rule.pattern.exec(fullSource);
+            if (match) {
+              const lineNum = fullSource.substring(0, match.index).split("\n").length;
+              const lineText = sourceLines[lineNum - 1] || "";
+              // Count all matches
+              let count = 0;
+              const globalPattern = new RegExp(rule.pattern.source, rule.pattern.flags + (rule.pattern.flags.includes("g") ? "" : "g"));
+              let m;
+              while ((m = globalPattern.exec(fullSource)) !== null) {
+                count++;
+                if (m.index === globalPattern.lastIndex) globalPattern.lastIndex++;
+              }
+              findingsMap.set(rule.id, { rule, line: lineNum, lineText, count: Math.max(count, 1) });
+            }
+          } else {
+            // Per-line rules
+            for (let i = 0; i < sourceLines.length; i++) {
+              if (rule.pattern.test(sourceLines[i])) {
+                if (!findingsMap.has(rule.id)) {
+                  findingsMap.set(rule.id, { rule, line: i + 1, lineText: sourceLines[i], count: 1 });
+                } else {
+                  findingsMap.get(rule.id)!.count++;
+                }
+              }
+            }
+          }
+        }
+
+        // Sort by line number, apply cap
+        const findings = [...findingsMap.values()]
+          .sort((a, b) => a.line - b.line)
+          .slice(0, maxFindings);
+
+        if (findings.length === 0) {
+          return ok(
+            `✅ No Clean ABAP anti-patterns detected (${CLEAN_ABAP_RULES.length} rules checked).\n\n` +
+            `📖 ${CLEAN_ABAP_LOCAL_DIR}`
+          );
+        }
+
+        // Load guidelines once
+        const files = await loadCleanAbapFiles();
+        const allSections: Array<{ heading: string; content: string }> = [];
+        for (const [, content] of files) {
+          for (const s of parseMarkdownSections(content)) {
+            allSections.push(s);
+          }
+        }
+
+        // Build output per finding
+        const outputParts: string[] = [];
+        for (const f of findings) {
+          const truncLine = f.lineText.trim().length > 120
+            ? f.lineText.trim().substring(0, 120) + "…"
+            : f.lineText.trim();
+          const countInfo = f.count > 1 ? ` (${f.count}x in source)` : "";
+
+          let guidelinePart = "";
+          const guideResults = searchCleanAbapSections(allSections, f.rule.guidelineQuery, 1);
+          if (guideResults.length > 0) {
+            const excerpt = guideResults[0].excerpt.split("\n").slice(0, 15).join("\n").trim();
+            guidelinePart = `\n→ Clean ABAP § **${guideResults[0].heading}**\n\`\`\`\n${excerpt}\n\`\`\``;
+          }
+
+          outputParts.push(
+            `## [${f.rule.category}] ${f.rule.id} — line ${f.line}${countInfo}\n` +
+            `❌ ${f.rule.message}\n` +
+            `   \`${truncLine}\`` +
+            guidelinePart
+          );
+        }
+
+        const totalAntiPatterns = [...findingsMap.values()].reduce((sum, f) => sum + f.count, 0);
+        return ok(
+          `# Clean ABAP Review — ${findings.length} finding(s), ${totalAntiPatterns} occurrence(s)\n\n` +
+          outputParts.join("\n\n---\n\n") +
+          `\n\n---\n${CLEAN_ABAP_RULES.length} rules checked | 📖 ${CLEAN_ABAP_LOCAL_DIR}`
         );
       }
 

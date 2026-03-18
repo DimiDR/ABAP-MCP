@@ -40,7 +40,7 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**45 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**46 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
@@ -50,7 +50,7 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | CREATE | 7 | Programme, Klassen, Interfaces, FuGr, CDS, Tabellen, Messages |
 | DELETE | 1 | Objekte löschen |
 | TEST | 2 | Unit Tests ausführen, Test-Includes erstellen |
-| QUALITY | 3 | Syntaxcheck, ATC-Prüfungen, DDIC-Feldvalidierung |
+| QUALITY | 4 | Syntaxcheck, ATC-Prüfungen, DDIC-Feldvalidierung, Clean ABAP Code-Review |
 | DIAGNOSTICS | 4 | Short Dumps, Performance Traces |
 | TRANSPORT | 3 | Transport-Infos, Transport-Inhalte, Transport erstellen |
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
@@ -696,6 +696,62 @@ DATA lv_foo TYPE T001-ABKRS.       ❌ Invalid — ABKRS existiert NICHT
 
 ---
 
+#### `review_clean_abap`
+
+Prüft ABAP-Quellcode auf Einhaltung der Clean ABAP Richtlinien. Statische Analyse — **keine SAP-Systemverbindung erforderlich**. Erkennt Anti-Patterns und liefert zu jedem Finding den relevanten Abschnitt aus dem offiziellen Clean ABAP Styleguide.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `source` | string | ✓ | ABAP-Quellcode zur Prüfung |
+| `maxFindings` | number | | Max. Anzahl Findings (1–50, Default: 10) |
+
+**Erkannte Anti-Patterns (11 Regeln):**
+
+| Regel | Kategorie | Beschreibung |
+|-------|-----------|--------------|
+| `HUNGARIAN_NOTATION` | Names | Typ-Präfixe wie `lv_`, `lt_`, `gs_` |
+| `MOVE_STATEMENT` | Language | Veraltetes `MOVE ... TO` |
+| `COMPUTE_STATEMENT` | Language | Veraltetes `COMPUTE` |
+| `ADD_SUBTRACT` | Language | Veraltetes `ADD/SUBTRACT ... TO` |
+| `MULTIPLY_DIVIDE` | Language | Veraltetes `MULTIPLY/DIVIDE ... BY` |
+| `CALL_METHOD` | Language | Veraltetes `CALL METHOD` |
+| `FORM_DEFINITION` | Language | `FORM`-Subroutinen statt Methoden |
+| `CONCATENATE_STATEMENT` | Strings | `CONCATENATE` statt String Templates |
+| `SELECT_ENDSELECT` | Tables | `SELECT...ENDSELECT` statt `INTO TABLE` |
+| `CHECK_IN_METHOD` | Methods | `CHECK` in Methoden statt `IF ... RETURN` |
+| `CALL_FUNCTION_SYSUBRC` | ErrorHandling | `CALL FUNCTION` + `sy-subrc` statt `TRY/CATCH` |
+
+**Beispiel-Ausgabe:**
+
+```
+# Clean ABAP Review — 2 finding(s), 3 occurrence(s)
+
+## [Names] HUNGARIAN_NOTATION — line 1 (2x in source)
+❌ Hungarian notation prefix (e.g. lv_, lt_, gs_). Clean ABAP avoids type-encoding prefixes.
+   `DATA lv_test TYPE string.`
+
+→ Clean ABAP § **Avoid encodings, esp. Hungarian notation and prefixes**
+   <Excerpt aus dem Clean ABAP Guide>
+
+---
+
+## [Language] MOVE_STATEMENT — line 2
+❌ Obsolete MOVE ... TO. Use = operator instead.
+   `MOVE lv_test TO lv_other.`
+
+→ Clean ABAP § **Prefer functional to procedural language constructs**
+   <Excerpt aus dem Clean ABAP Guide>
+
+---
+11 rules checked | 📖 clean-abap
+```
+
+> **Hinweis:** Dieses Tool ergänzt `run_atc_check` — ATC prüft System-Regeln und technische Korrektheit, `review_clean_abap` prüft Clean ABAP Style-Konventionen. Für optimale Ergebnisse beide kombinieren.
+
+---
+
 ### DIAGNOSTICS — Diagnose
 
 #### `get_short_dumps`
@@ -976,7 +1032,7 @@ Ein MCP Prompt der einen strukturierten 6-Schritte-Workflow für ABAP-Entwicklun
 
 1. **Kontext erfassen** — `search_abap_objects` → `analyze_abap_context(depth="deep")` → vollständigen Report lesen
 2. **Referenzen recherchieren** — Veraltete Patterns erkennen, moderne Alternativen suchen (z.B. `REUSE_ALV_GRID_DISPLAY` → `CL_SALV_TABLE`)
-3. **Clean ABAP anwenden** — Inline-Deklarationen, String Templates, funktionale Methoden, ABAP SQL, CX_*-Ausnahmen, OOP
+3. **Clean ABAP anwenden** — Bestehenden Code mit `review_clean_abap` prüfen, Inline-Deklarationen, String Templates, funktionale Methoden, ABAP SQL, CX_*-Ausnahmen, OOP
 4. **Code-Platzierung** — Richtiges Include / richtige Methode anhand des Kontext-Reports bestimmen
 5. **Implementierung** — `write_abap_source` mit Retry bei Syntax-/Aktivierungsfehlern
 6. **Qualitätsprüfung** — `run_atc_check`, Findings Priorität 1+2 beheben

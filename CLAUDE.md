@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 45 tools across 12 categories + 1 meta-tool (`find_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
+ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 46 tools across 12 categories + 1 meta-tool (`find_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
 
 ## Build & Development Commands
 
@@ -83,7 +83,7 @@ lock(objectUrl)
 ### Token Optimization
 - `SAP_ABAP_VERSION=latest` (default): ABAP version for help.sap.com documentation URLs (e.g. `latest`, `758`, `754`)
 - `DEFER_TOOLS=true` (default): Lazy load tools on demand via `find_tools(category=...)` or `find_tools(query=...)`
-- `DEFER_TOOLS=false`: Load all 45 tools upfront (higher initial token cost)
+- `DEFER_TOOLS=false`: Load all 46 tools upfront (higher initial token cost)
 
 ## Key Patterns & Implementation Details
 
