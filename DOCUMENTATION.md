@@ -40,11 +40,11 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**46 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**47 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
-| SEARCH | 1 | Objektsuche mit Wildcards |
+| SEARCH | 2 | Objektsuche mit Wildcards, Quellcode-Volltextsuche |
 | READ | 10 | Quellcode, Metadaten, Where-Used, Code Completion, Definitionen, Revisionen, DDIC, Tabellen, Fix-Vorschläge, Kontext-Analyse |
 | WRITE | 4 | Quellcode schreiben, aktivieren, Massen-Aktivierung, formatieren |
 | CREATE | 7 | Programme, Klassen, Interfaces, FuGr, CDS, Tabellen, Messages |
@@ -287,6 +287,30 @@ Sucht ABAP-Objekte im System per Namensmuster. Wildcards (`*`) werden unterstüt
 Suche alle Klassen die "BILLING" im Namen haben
 → search_abap_objects(query="*BILLING*", objectType="CLAS/OC")
 ```
+
+---
+
+#### `search_source_code`
+
+Volltextsuche über allen ABAP-Quellcode im System. Findet Objekte, deren Quelltext den angegebenen Text enthält. Benötigt NW 7.31+ (ADT Text-Search-Service).
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `searchString` | string | ✓ | Suchtext, z.B. `Hallo`, `READ TABLE`, `BAPI_USER_GET_DETAIL` |
+| `maxResults` | number | | Maximale Ergebnisse (1–200, Default: 50) |
+
+**Beispiel:**
+```
+Finde alle Programme die "Hallo" ausgeben
+→ search_source_code(searchString="Hallo")
+
+Finde alle Stellen wo BAPI_USER_GET_DETAIL verwendet wird
+→ search_source_code(searchString="BAPI_USER_GET_DETAIL")
+```
+
+**Hinweis:** Nutzt den ADT-Endpoint `/sap/bc/adt/repository/informationsystem/textsearch`. Erfordert ggf. die Business-Funktion `SRIS_SOURCE_SEARCH` auf dem SAP-System.
 
 ---
 

@@ -349,6 +349,12 @@ const S_Search = z.object({
   ),
 });
 
+const S_SearchSourceCode = z.object({
+  searchString: z.string().describe("Text to search for in ABAP source code, e.g. 'Hallo', 'READ TABLE', 'BAPI_USER_GET_DETAIL'"),
+  maxResults:   z.number().int().min(1).max(200).default(50).optional()
+    .describe("Max results to return (default 50, max 200)"),
+});
+
 // --- READ ---
 const S_ReadSource = z.object({
   objectUrl: z.string().describe("ADT URL, e.g. /sap/bc/adt/programs/programs/ztest"),
@@ -1495,6 +1501,9 @@ const TOOLS: ToolDef[] = [
   { name: "search_abap_objects",
     description: "Search for ABAP objects by name pattern. Wildcards (*) are supported. Returns name, type, ADT URI and package. Supports 30+ object types (programs, classes, function groups, CDS, tables, domains, data elements, messages, etc.).",
     schema: S_Search },
+  { name: "search_source_code",
+    description: "Full-text search across all ABAP source code in the system. Finds objects whose source contains the given text (e.g. 'Hallo', 'BAPI_USER_GET_DETAIL', 'READ TABLE'). Returns matching object names, types and ADT URIs. Requires NW 7.31+.",
+    schema: S_SearchSourceCode },
 
   // ── READ ────────────────────────────────────────────────────────────────
   { name: "read_abap_source",
@@ -1689,7 +1698,7 @@ const TOOLS: ToolDef[] = [
 // ============================================================================
 
 const TOOL_CATEGORIES: Record<string, string[]> = {
-  SEARCH:      ["search_abap_objects"],
+  SEARCH:      ["search_abap_objects", "search_source_code"],
   READ:        ["read_abap_source", "get_object_info", "where_used", "get_code_completion",
                 "find_definition", "get_revisions", "get_ddic_element", "get_table_contents",
                 "get_fix_proposals", "analyze_abap_context"],
@@ -1925,6 +1934,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         return ok(items.length === 0
           ? `No objects found for '${p.query}'`
           : `${items.length} object(s) found:\n\n${JSON.stringify(items, null, 2)}`);
+      }
+
+      // ── search_source_code ───────────────────────────────────────────────
+      case "search_source_code": {
+        const p = S_SearchSourceCode.parse(args);
+        const max = p.maxResults ?? 50;
+        const resp = await client.httpClient.request(
+          "/sap/bc/adt/repository/informationsystem/textsearch",
+          {
+            method: "GET",
+            qs: {
+              searchString: p.searchString,
+              searchFromIndex: 1,
+              searchToIndex: max,
+            },
+            headers: { Accept: "application/*" },
+          }
+        );
+        const xml = typeof resp.body === "string" ? resp.body : "";
+        // Parse <adtcore:objectReference> or <adtMainObject> entries from the response
+        const results: Array<{ name: string; type: string; uri: string; description?: string }> = [];
+        const refPattern = /<(?:adtcore:objectReference|adtMainObject)[^>]*?adtcore:name="([^"]*)"[^>]*?adtcore:type="([^"]*)"[^>]*?adtcore:uri="([^"]*)"(?:[^>]*?adtcore:description="([^"]*)")?/g;
+        let match;
+        while ((match = refPattern.exec(xml)) !== null) {
+          results.push({
+            name: match[1],
+            type: match[2],
+            uri:  match[3],
+            ...(match[4] ? { description: match[4] } : {}),
+          });
+        }
+        return ok(results.length === 0
+          ? `No source code matches found for '${p.searchString}'`
+          : `${results.length} object(s) contain '${p.searchString}':\n\n${JSON.stringify(results, null, 2)}`);
       }
 
       // ── read_abap_source ────────────────────────────────────────────────

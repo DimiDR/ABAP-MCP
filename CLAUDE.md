@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 46 tools across 12 categories + 1 meta-tool (`find_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
+ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 47 tools across 12 categories + 1 meta-tool (`find_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
 
 ## Build & Development Commands
 
@@ -83,7 +83,7 @@ lock(objectUrl)
 ### Token Optimization
 - `SAP_ABAP_VERSION=latest` (default): ABAP version for help.sap.com documentation URLs (e.g. `latest`, `758`, `754`)
 - `DEFER_TOOLS=true` (default): Lazy load tools on demand via `find_tools(category=...)` or `find_tools(query=...)`
-- `DEFER_TOOLS=false`: Load all 46 tools upfront (higher initial token cost)
+- `DEFER_TOOLS=false`: Load all 47 tools upfront (higher initial token cost)
 
 ## Key Patterns & Implementation Details
 
@@ -115,7 +115,7 @@ All tools use Zod schemas (defined near line 185). Schemas include descriptions 
 
 ## Important Context from Documentation
 
-- **45 Tools in 12 Groups + 1 Meta-Tool + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
+- **47 Tools in 12 Groups + 1 Meta-Tool + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
 - **ADT-Based**: Uses `/sap/bc/adt/*` endpoints (SICF must be active on SAP side)
 - **Write Safety**: Lock conflicts prevented by serial execution; syntax errors block activation; incomplete unlocks logged for manual recovery (SE03)
 - **Token Budget**: Default deferred mode targets ~75% reduction in tokens per `tools/list` call
