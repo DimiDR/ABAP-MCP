@@ -81,7 +81,7 @@ async function getClient(): Promise<ADTClient> {
       await adtClient.httpClient.request("/sap/bc/adt/core/discovery", { method: "HEAD" });
       return adtClient;
     } catch {
-      adtClient = null; // Session abgelaufen → neu aufbauen
+      adtClient = null; // Session expired → reconnect
     }
   }
   const sslConfig = cfg.allowUnauthorized ? createSSLConfig(true) : {};
@@ -92,7 +92,7 @@ async function getClient(): Promise<ADTClient> {
   } catch (e) {
     adtClient = null;
     throw new McpError(ErrorCode.InternalError,
-      `ADT-Verbindung nicht verfügbar: ${e instanceof Error ? e.message : String(e)}. Prüfe: SAP_URL erreichbar? VPN aktiv? SICF /sap/bc/adt aktiviert? Credentials korrekt?`);
+      `ADT connection not available: ${e instanceof Error ? e.message : String(e)}. Check: SAP_URL reachable? VPN active? SICF /sap/bc/adt activated? Credentials correct?`);
   }
   return adtClient;
 }
@@ -142,7 +142,7 @@ async function loadCleanAbapFiles(): Promise<Map<string, string>> {
       signal: AbortSignal.timeout(20_000),
       headers: { "User-Agent": "ABAP-MCP-Server/2.0" },
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} beim Laden des Clean ABAP Guides`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} loading Clean ABAP Guide`);
     files.set("CleanABAP", await resp.text());
   }
 
@@ -210,7 +210,7 @@ async function withStatefulSession<T>(client: ADTClient, fn: () => Promise<T>): 
     return await fn();
   } finally {
     try { await client.dropSession(); } catch (e) {
-      console.error("⚠️ dropSession fehlgeschlagen:", e instanceof Error ? e.message : String(e));
+      console.error("⚠️ dropSession failed:", e instanceof Error ? e.message : String(e));
     }
     client.stateful = session_types.stateless;
   }
@@ -224,14 +224,14 @@ async function withStatefulSession<T>(client: ADTClient, fn: () => Promise<T>): 
 function assertWriteEnabled(action = "Write"): void {
   if (!cfg.allowWrite)
     throw new McpError(ErrorCode.InvalidRequest,
-      `${action} ist deaktiviert. ALLOW_WRITE=true in .env setzen. ` +
-      "⚠️  Nur auf DEV-Systemen aktivieren!");
+      `${action} is disabled. Set ALLOW_WRITE=true in .env. ` +
+      "⚠️  Only enable on DEV systems!");
 }
 
 function assertDeleteEnabled(): void {
   if (!cfg.allowDelete)
     throw new McpError(ErrorCode.InvalidRequest,
-      "Löschen ist deaktiviert. ALLOW_DELETE=true in .env setzen. ⚠️  Nicht rückgängig machbar!");
+      "Delete is disabled. Set ALLOW_DELETE=true in .env. ⚠️  This action cannot be undone!");
 }
 
 function assertPackageAllowed(devClass: string): void {
@@ -239,21 +239,21 @@ function assertPackageAllowed(devClass: string): void {
   const blocked = cfg.blockedPackages.find(p => upper.startsWith(p));
   if (blocked)
     throw new McpError(ErrorCode.InvalidRequest,
-      `Package '${devClass}' ist gesperrt (Prefix '${blocked}' in BLOCKED_PACKAGES).`);
+      `Package '${devClass}' is blocked (prefix '${blocked}' in BLOCKED_PACKAGES).`);
 }
 
 function assertCustomerNamespace(name: string, prefix: string[]): void {
   const upper = name.toUpperCase();
   if (!prefix.some(p => upper.startsWith(p)))
     throw new McpError(ErrorCode.InvalidRequest,
-      `Name '${name}' muss mit ${prefix.join(" oder ")} beginnen (Customer Namespace).`);
+      `Name '${name}' must start with ${prefix.join(" or ")} (customer namespace).`);
 }
 
 function assertSelectOnly(query: string): void {
   const trimmed = query.trim();
   if (!/^SELECT\s/i.test(trimmed) || /[;.]\s*(INSERT|UPDATE|DELETE|MODIFY|COMMIT)\s/i.test(trimmed))
     throw new McpError(ErrorCode.InvalidRequest,
-      "Nur SELECT-Statements sind erlaubt. Die Query muss mit 'SELECT' beginnen und darf keine DML-Anweisungen enthalten.");
+      "Only SELECT statements are allowed. The query must start with 'SELECT' and must not contain DML statements.");
 }
 
 // ============================================================================
@@ -262,253 +262,253 @@ function assertSelectOnly(query: string): void {
 
 // --- SEARCH ---
 const S_Search = z.object({
-  query:       z.string().describe("Namensmuster, Wildcards * möglich, z.B. 'ZCL_*SERVICE*'"),
+  query:       z.string().describe("Name pattern, wildcards * supported, e.g. 'ZCL_*SERVICE*'"),
   maxResults:  z.number().int().min(1).max(100).default(20).optional(),
   objectType:  z.string().optional().describe(
-    "ADT-Typ, z.B. PROG/P | CLAS/OC | FUGR/F | INTF/OI | DDLS/DF | TABL/DT | DOMA/DE | DTEL/DE | MSAG/E | SICF/SC. Leer = alle Typen."
+    "ADT type, e.g. PROG/P | CLAS/OC | FUGR/F | INTF/OI | DDLS/DF | TABL/DT | DOMA/DE | DTEL/DE | MSAG/E | SICF/SC. Empty = all types."
   ),
 });
 
 // --- READ ---
 const S_ReadSource = z.object({
-  objectUrl: z.string().describe("ADT-URL, z.B. /sap/bc/adt/programs/programs/ztest"),
+  objectUrl: z.string().describe("ADT URL, e.g. /sap/bc/adt/programs/programs/ztest"),
   includeRelated: z.boolean().default(false).optional().describe(
-    "Wenn true, werden automatisch alle zugehörigen Objekte mitgelesen: " +
-    "Klassen-Includes (Definitionen, Implementierungen, Macros, Testklassen), " +
-    "Programm-Includes (INCLUDE-Anweisungen), Funktionsgruppen-Includes. " +
-    "Empfohlen um den vollständigen Kontext eines Objekts zu verstehen."
+    "If true, all related objects are automatically read along: " +
+    "class includes (definitions, implementations, macros, test classes), " +
+    "program includes (INCLUDE statements resolved), function group includes. " +
+    "Recommended to understand the full context of an object."
   ),
 });
 const S_ObjectInfo = z.object({
-  objectUrl: z.string().describe("ADT-URL des Objekts"),
+  objectUrl: z.string().describe("ADT URL of the object"),
 });
 const S_WhereUsed = z.object({
-  objectUrl:  z.string().describe("ADT-URL des gesuchten Objekts"),
+  objectUrl:  z.string().describe("ADT URL of the object to search"),
   maxResults: z.number().int().min(1).max(200).default(50).optional(),
 });
 const S_CodeCompletion = z.object({
-  objectUrl:   z.string().describe("ADT-URL des Objekts (Kontext für Vervollständigung)"),
-  source:      z.string().describe("Aktueller Quellcode mit Cursor-Position"),
-  line:        z.number().int().min(1).describe("Zeile des Cursors (1-basiert)"),
-  column:      z.number().int().min(0).describe("Spalte des Cursors (0-basiert)"),
+  objectUrl:   z.string().describe("ADT URL of the object (context for completion)"),
+  source:      z.string().describe("Current source code with cursor position"),
+  line:        z.number().int().min(1).describe("Cursor line (1-based)"),
+  column:      z.number().int().min(0).describe("Cursor column (0-based)"),
 });
 
 // --- WRITE ---
 const S_WriteSource = z.object({
-  objectUrl:        z.string().describe("ADT-URL ohne /source/main Suffix"),
-  source:           z.string().describe("Vollständiger ABAP-Quellcode"),
-  transport:        z.string().optional().describe("Transportauftrag, z.B. DEVK900123"),
-  activateAfterWrite: z.boolean().default(true).optional().describe("Nach dem Schreiben aktivieren (Default: true)"),
-  skipSyntaxCheck:  z.boolean().default(false).optional().describe("Syntaxcheck überspringen (nicht empfohlen)"),
-  mainProgram:      z.string().optional().describe("Hauptprogramm für Syntaxcheck bei Includes — Name (z.B. ZRYBAK_AI_TEST) oder ADT-URL"),
+  objectUrl:        z.string().describe("ADT URL without /source/main suffix"),
+  source:           z.string().describe("Complete ABAP source code"),
+  transport:        z.string().optional().describe("Transport request, e.g. DEVK900123"),
+  activateAfterWrite: z.boolean().default(true).optional().describe("Activate after writing (default: true)"),
+  skipSyntaxCheck:  z.boolean().default(false).optional().describe("Skip syntax check (not recommended)"),
+  mainProgram:      z.string().optional().describe("Main program for syntax check of includes — name (e.g. ZRYBAK_AI_TEST) or ADT URL"),
 });
 const S_Activate = z.object({
-  objectUrl:  z.string().describe("ADT-URL des Objekts"),
-  objectName: z.string().describe("Objektname, z.B. ZTEST oder ZCL_FOO"),
+  objectUrl:  z.string().describe("ADT URL of the object"),
+  objectName: z.string().describe("Object name, e.g. ZTEST or ZCL_FOO"),
 });
 const S_MassActivate = z.object({
   objects: z.array(z.object({
-    objectUrl:  z.string().describe("ADT-URL"),
-    objectName: z.string().describe("Objektname"),
-    objectType: z.string().optional().describe("ADT-Typ, z.B. PROG/P, PROG/I, CLAS/OC (optional, wird aus URL hergeleitet)"),
-  })).describe("Liste der zu aktivierenden Objekte (max. 50)"),
+    objectUrl:  z.string().describe("ADT URL"),
+    objectName: z.string().describe("Object name"),
+    objectType: z.string().optional().describe("ADT type, e.g. PROG/P, PROG/I, CLAS/OC (optional, derived from URL)"),
+  })).describe("List of objects to activate (max. 50)"),
 });
 const S_PrettyPrint = z.object({
-  source:      z.string().describe("ABAP-Quellcode der formatiert werden soll"),
-  objectUrl:   z.string().optional().describe("ADT-URL (für Kontext, optional)"),
+  source:      z.string().describe("ABAP source code to format"),
+  objectUrl:   z.string().optional().describe("ADT URL (for context, optional)"),
 });
 
 // --- CREATE ---
 const S_CreateProgram = z.object({
-  name:        z.string().min(1).max(30).describe("Programmname, muss mit Z oder Y beginnen"),
-  description: z.string().max(40).describe("Kurztext (max 40 Zeichen)"),
-  devClass:    z.string().describe("Paket, z.B. ZLOCAL oder $TMP"),
-  transport:   z.string().optional().describe("Transportauftrag (leer für lokale Objekte)"),
-  programType: z.enum(["P", "I"]).default("P").optional().describe("P = Executable (Report), I = Include (Default: P)"),
+  name:        z.string().min(1).max(30).describe("Program name, must start with Z or Y"),
+  description: z.string().max(40).describe("Short description (max 40 characters)"),
+  devClass:    z.string().describe("Package, e.g. ZLOCAL or $TMP"),
+  transport:   z.string().optional().describe("Transport request (empty for local objects)"),
+  programType: z.enum(["P", "I"]).default("P").optional().describe("P = Executable (Report), I = Include (default: P)"),
 });
 const S_CreateClass = z.object({
-  name:        z.string().min(1).max(30).describe("Klassenname, muss mit ZCL_ oder YCL_ beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(30).describe("Class name, must start with ZCL_ or YCL_"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
-  superClass:  z.string().optional().describe("Superklasse, z.B. CL_ABAP_UNIT_ASSERT"),
+  superClass:  z.string().optional().describe("Super class, e.g. CL_ABAP_UNIT_ASSERT"),
 });
 const S_CreateInterface = z.object({
-  name:        z.string().min(1).max(30).describe("Interfacename, muss mit ZIF_ oder YIF_ beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(30).describe("Interface name, must start with ZIF_ or YIF_"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
 });
 const S_CreateFunctionGroup = z.object({
-  name:        z.string().min(1).max(26).describe("FuGr-Name, muss mit Z oder Y beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(26).describe("Function group name, must start with Z or Y"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
 });
 const S_CreateCdsView = z.object({
-  name:        z.string().min(1).max(30).describe("CDS-Name, muss mit Z oder Y beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(30).describe("CDS name, must start with Z or Y"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
 });
 const S_CreateTable = z.object({
-  name:        z.string().min(1).max(16).describe("Tabellenname, muss mit Z oder Y beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(16).describe("Table name, must start with Z or Y"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
 });
 const S_CreateMessageClass = z.object({
-  name:        z.string().min(1).max(20).describe("Message-Class-Name, muss mit Z oder Y beginnen"),
-  description: z.string().max(40).describe("Kurztext"),
-  devClass:    z.string().describe("Paket"),
+  name:        z.string().min(1).max(20).describe("Message class name, must start with Z or Y"),
+  description: z.string().max(40).describe("Short description"),
+  devClass:    z.string().describe("Package"),
   transport:   z.string().optional(),
 });
 
 // --- DELETE ---
 const S_DeleteObject = z.object({
-  objectUrl:  z.string().describe("ADT-URL des zu löschenden Objekts"),
-  objectName: z.string().describe("Objektname (zur Bestätigung)"),
-  transport:  z.string().optional().describe("Transportauftrag"),
+  objectUrl:  z.string().describe("ADT URL of the object to delete"),
+  objectName: z.string().describe("Object name (for confirmation)"),
+  transport:  z.string().optional().describe("Transport request"),
 });
 
 // --- TEST ---
 const S_RunTests = z.object({
-  objectUrl: z.string().describe("ADT-URL der Klasse oder des Programms"),
+  objectUrl: z.string().describe("ADT URL of the class or program"),
 });
 const S_CreateTestInclude = z.object({
-  classUrl: z.string().describe("ADT-URL der Klasse, z.B. /sap/bc/adt/oo/classes/zcl_foo"),
+  classUrl: z.string().describe("ADT URL of the class, e.g. /sap/bc/adt/oo/classes/zcl_foo"),
 });
 
 // --- QUALITY ---
 const S_SyntaxCheck = z.object({
-  objectUrl:   z.string().describe("ADT-URL des Objekts"),
-  source:      z.string().describe("ABAP-Quellcode"),
-  mainProgram: z.string().optional().describe("Hauptprogramm (für Includes) — Name oder ADT-URL"),
+  objectUrl:   z.string().describe("ADT URL of the object"),
+  source:      z.string().describe("ABAP source code"),
+  mainProgram: z.string().optional().describe("Main program (for includes) — name or ADT URL"),
 });
 const S_RunAtc = z.object({
-  objectUrl:  z.string().describe("ADT-URL des zu prüfenden Objekts"),
-  checkVariant: z.string().default("DEFAULT").optional().describe("ATC-Prüfvariante (Default: DEFAULT)"),
+  objectUrl:  z.string().describe("ADT URL of the object to check"),
+  checkVariant: z.string().default("DEFAULT").optional().describe("ATC check variant (default: DEFAULT)"),
 });
 const S_ValidateDdic = z.object({
-  source: z.string().describe("ABAP-Quellcode der zu prüfenden Programmlogik"),
+  source: z.string().describe("ABAP source code to validate program logic for"),
 });
 
 // --- DIAGNOSTICS ---
 const S_GetDumps = z.object({
   maxResults: z.number().int().min(1).max(100).default(20).optional(),
-  user:       z.string().optional().describe("Auf User einschränken"),
-  since:      z.string().optional().describe("Zeitfilter ISO-8601, z.B. 2025-01-01T00:00:00Z"),
+  user:       z.string().optional().describe("Filter by user"),
+  since:      z.string().optional().describe("Time filter ISO-8601, e.g. 2025-01-01T00:00:00Z"),
 });
 const S_GetDumpDetail = z.object({
-  dumpId: z.string().describe("Dump-ID aus get_short_dumps"),
+  dumpId: z.string().describe("Dump ID from get_short_dumps"),
 });
 const S_GetTraces = z.object({
   maxResults: z.number().int().min(1).max(50).default(10).optional(),
-  user:       z.string().optional().describe("Auf User einschränken"),
+  user:       z.string().optional().describe("Filter by user"),
 });
 const S_GetTraceDetail = z.object({
-  traceId: z.string().describe("Trace-ID aus get_traces"),
+  traceId: z.string().describe("Trace ID from get_traces"),
 });
 
 // --- TRANSPORT ---
 const S_TransportInfo = z.object({
-  objectUrl: z.string().describe("ADT-URL des Objekts"),
-  devClass:  z.string().describe("Paket des Objekts"),
+  objectUrl: z.string().describe("ADT URL of the object"),
+  devClass:  z.string().describe("Package of the object"),
 });
 const S_TransportObjects = z.object({
-  transportId: z.string().describe("Transportauftrag, z.B. DEVK900123"),
+  transportId: z.string().describe("Transport request, e.g. DEVK900123"),
 });
 
 // --- ABAPGIT ---
 const S_GitRepos = z.object({
-  objectUrl: z.string().optional().describe("Systemverbindungs-URL (leer = aktives System)"),
+  objectUrl: z.string().optional().describe("System connection URL (empty = active system)"),
 });
 const S_GitPull = z.object({
-  repoId:    z.string().describe("abapGit Repository-ID"),
-  transport: z.string().optional().describe("Transportauftrag für Pull"),
+  repoId:    z.string().describe("abapGit repository ID"),
+  transport: z.string().optional().describe("Transport request for pull"),
 });
 
 // --- QUERY ---
 const S_Query = z.object({
-  query: z.string().describe("SELECT-Statement, z.B. SELECT * FROM T001 UP TO 10 ROWS"),
+  query: z.string().describe("SELECT statement, e.g. SELECT * FROM T001 UP TO 10 ROWS"),
 });
 const S_ExecuteSnippet = z.object({
   source: z.string().describe(
-    "Vollständiger ausführbarer ABAP-Code. Muss ein gültiges Programm sein — " +
-    "beginnt mit REPORT oder PROGRAM, endet mit Punkt. " +
-    "Ausgabe über WRITE-Anweisungen. Kein SELECTION-SCREEN."
+    "Complete executable ABAP code. Must be a valid program — " +
+    "starts with REPORT or PROGRAM, ends with a period. " +
+    "Output via WRITE statements. No SELECTION-SCREEN."
   ),
   timeout: z.number().int().min(1).max(30).default(10).optional()
-    .describe("Maximale Laufzeit in Sekunden (Default: 10, Max: 30)"),
+    .describe("Maximum runtime in seconds (default: 10, max: 30)"),
 });
 
 // --- NEW TOOLS ---
 const S_FindDefinition = z.object({
-  objectUrl:   z.string().describe("ADT-URL des Quellobjekts (Kontext)"),
-  source:      z.string().describe("Aktueller Quellcode"),
-  line:        z.number().int().min(1).describe("Zeile des Tokens (1-basiert)"),
-  startColumn: z.number().int().min(0).describe("Startspalte des Tokens (0-basiert)"),
-  endColumn:   z.number().int().min(0).describe("Endspalte des Tokens (0-basiert)"),
-  mainProgram: z.string().optional().describe("Hauptprogramm (bei Includes)"),
+  objectUrl:   z.string().describe("ADT URL of the source object (context)"),
+  source:      z.string().describe("Current source code"),
+  line:        z.number().int().min(1).describe("Token line (1-based)"),
+  startColumn: z.number().int().min(0).describe("Token start column (0-based)"),
+  endColumn:   z.number().int().min(0).describe("Token end column (0-based)"),
+  mainProgram: z.string().optional().describe("Main program (for includes)"),
 });
 const S_GetRevisions = z.object({
-  objectUrl: z.string().describe("ADT-URL des Objekts"),
+  objectUrl: z.string().describe("ADT URL of the object"),
 });
 const S_CreateTransport = z.object({
-  objectUrl:      z.string().describe("ADT-URL des Objekts"),
-  description:    z.string().max(60).describe("Beschreibungstext des Transports"),
-  devClass:       z.string().describe("Paket"),
-  transportLayer: z.string().optional().describe("Transport-Layer (optional)"),
+  objectUrl:      z.string().describe("ADT URL of the object"),
+  description:    z.string().max(60).describe("Transport description text"),
+  devClass:       z.string().describe("Package"),
+  transportLayer: z.string().optional().describe("Transport layer (optional)"),
 });
 const S_FixProposals = z.object({
-  objectUrl:   z.string().describe("ADT-URL des Objekts"),
-  source:      z.string().describe("Aktueller Quellcode"),
-  line:        z.number().int().min(1).describe("Zeile des Fehlers (1-basiert)"),
-  column:      z.number().int().min(0).describe("Spalte des Fehlers (0-basiert)"),
+  objectUrl:   z.string().describe("ADT URL of the object"),
+  source:      z.string().describe("Current source code"),
+  line:        z.number().int().min(1).describe("Error line (1-based)"),
+  column:      z.number().int().min(0).describe("Error column (0-based)"),
 });
 const S_GetDdicElement = z.object({
-  path: z.string().describe("DDIC-Pfad, z.B. Tabellenname oder CDS-View-Name"),
+  path: z.string().describe("DDIC path, e.g. table name or CDS view name"),
 });
 const S_GetInactiveObjects = z.object({});
 const S_GetTableContents = z.object({
-  tableName: z.string().describe("Name der DDIC-Tabelle"),
-  maxRows:   z.number().int().min(1).max(1000).default(100).optional().describe("Max. Anzahl Zeilen (Default: 100)"),
+  tableName: z.string().describe("Name of the DDIC table"),
+  maxRows:   z.number().int().min(1).max(1000).default(100).optional().describe("Max. number of rows (default: 100)"),
 });
 
 // --- CONTEXT ANALYSIS ---
 const S_AnalyzeContext = z.object({
-  objectUrl: z.string().describe("ADT-URL des Haupt-Objekts"),
+  objectUrl: z.string().describe("ADT URL of the main object"),
   depth: z.enum(["shallow", "deep"]).default("deep").optional()
-    .describe("shallow = nur Hauptquelle + direkte Includes; deep = rekursiv alle Referenzen"),
+    .describe("shallow = main source + direct includes only; deep = recursively all references"),
 });
 
 // --- DOCUMENTATION ---
 const S_GetAbapKeywordDoc = z.object({
-  keyword: z.string().describe("ABAP-Keyword (z.B. SELECT, LOOP, READ TABLE, MODIFY)"),
-  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
+  keyword: z.string().describe("ABAP keyword (e.g. SELECT, LOOP, READ TABLE, MODIFY)"),
+  version: z.string().optional().describe("ABAP version (e.g. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
 });
 const S_GetAbapClassDoc = z.object({
-  className: z.string().describe("ABAP-Klassenname oder Interface (z.B. CL_SALV_TABLE, IF_AMDP_MARKER_HDB)"),
-  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
+  className: z.string().describe("ABAP class name or interface (e.g. CL_SALV_TABLE, IF_AMDP_MARKER_HDB)"),
+  version: z.string().optional().describe("ABAP version (e.g. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
 });
 const S_GetModuleBestPractices = z.object({
   module: z.enum(["FI", "CO", "MM", "SD", "PP", "PM", "QM", "HR", "HCM", "PS", "WM", "EWM", "BASIS", "BC", "ABAP"])
-    .describe("SAP-Modul (z.B. FI, MM, SD, ABAP)"),
+    .describe("SAP module (e.g. FI, MM, SD, ABAP)"),
 });
 const S_SearchCleanAbap = z.object({
   query: z.string().describe(
-    "Suchanfrage im SAP Clean ABAP Styleguide (z.B. 'naming conventions', 'error handling', 'SELECT', 'method length', 'comments'). " +
-    "Gibt die relevantesten Abschnitte aus dem offiziellen github.com/SAP/styleguides Clean ABAP Guide zurück."
+    "Search query in the SAP Clean ABAP Styleguide (e.g. 'naming conventions', 'error handling', 'SELECT', 'method length', 'comments'). " +
+    "Returns the most relevant sections from the official github.com/SAP/styleguides Clean ABAP Guide."
   ),
   maxResults: z.number().int().min(1).max(5).optional()
-    .describe("Maximale Anzahl Abschnitte (1–5, Standard: 2)"),
+    .describe("Maximum number of sections (1–5, default: 2)"),
 });
 const S_SearchAbapSyntax = z.object({
   query: z.string().describe(
-    "Freitext-Suchanfrage zur ABAP-Syntax (z.B. 'SELECT UP TO ROWS', 'LOOP AT clause order', 'READ TABLE WITH KEY'). " +
-    "Das Tool erkennt das Haupt-Keyword, lädt die offizielle SAP-Dokumentationsseite und gibt den relevanten Syntaxabschnitt zurück."
+    "Free-text search query for ABAP syntax (e.g. 'SELECT UP TO ROWS', 'LOOP AT clause order', 'READ TABLE WITH KEY'). " +
+    "The tool identifies the main keyword, loads the official SAP documentation page and returns the relevant syntax section."
   ),
-  version: z.string().optional().describe("ABAP-Version (z.B. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
+  version: z.string().optional().describe("ABAP version (e.g. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
 });
 
 // ============================================================================
@@ -567,11 +567,11 @@ async function resolveSyntaxContext(
       const mains = await client.mainPrograms(objectUrl);
       const autoMain = mains[0]?.["adtcore:uri"];
       if (autoMain) {
-        log?.push(`📎 Syntax-Kontext automatisch ermittelt: ${mains[0]["adtcore:name"]}`);
+        log?.push(`📎 Syntax context automatically determined: ${mains[0]["adtcore:name"]}`);
         return autoMain;
       }
     } catch (e) {
-      log?.push(`⚠️ Hauptprogramm für Syntaxcheck konnte nicht ermittelt werden: ${e instanceof Error ? e.message : String(e)}`);
+      log?.push(`⚠️ Main program for syntax check could not be determined: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -633,7 +633,10 @@ async function validateDdicReferencesInternal(client: ADTClient, source: string)
     const t = tableName.toUpperCase();
     if (skipTable(t)) continue;
 
-    if (selectList.trim() !== "*") {
+    // Skip SELECT field list for JOIN queries: fields may belong to joined tables,
+    // not the main FROM table. Tilde patterns (table~field) handle JOIN fields correctly.
+    const hasJoin = /\b(?:INNER|LEFT|RIGHT|OUTER|CROSS)\s+JOIN\b/i.test(rest);
+    if (!hasJoin && selectList.trim() !== "*") {
       const tokens = selectList.match(/\b([A-Z_][A-Z0-9_]*)\b/gi) ?? [];
       for (const tok of tokens) {
         const u = tok.toUpperCase();
@@ -648,6 +651,18 @@ async function validateDdicReferencesInternal(client: ADTClient, source: string)
         if (!SQL_KW.has(u)) addField(t, u);
       }
     }
+  }
+
+  // Post-processing: remove field entries that are themselves table names
+  // (table names accidentally added from SELECT field lists in non-JOIN queries)
+  const allTableNames = new Set(tableFieldMap.keys());
+  for (const [, fields] of tableFieldMap) {
+    for (const field of [...fields]) {
+      if (allTableNames.has(field)) fields.delete(field);
+    }
+  }
+  for (const [table, fields] of tableFieldMap) {
+    if (fields.size === 0) tableFieldMap.delete(table);
   }
 
   if (tableFieldMap.size === 0) {
@@ -669,14 +684,14 @@ async function validateDdicReferencesInternal(client: ADTClient, source: string)
         if (knownFields.has(field)) {
           validCount++;
         } else {
-          invalid.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden (Tabelle hat ${knownFields.size} Felder)`);
+          invalid.push(`  ❌ ${tableName}-${field}: Field not found (table has ${knownFields.size} fields)`);
         }
       }
 
-      checks.push(`  ✅ ${tableName}: ${referencedFields.size} referenzierte Felder geprüft`);
+      checks.push(`  ✅ ${tableName}: ${referencedFields.size} referenced fields checked`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      checks.push(`  ⚠️  ${tableName}: DDIC nicht auflösbar — ${msg.substring(0, 80)}`);
+      checks.push(`  ⚠️  ${tableName}: DDIC not resolvable — ${msg.substring(0, 80)}`);
     }
   }));
 
@@ -758,7 +773,7 @@ function extractMainContent(html: string): string {
 
   // Truncate to ~8000 chars
   if (content.length > 8000) {
-    content = content.substring(0, 8000) + "\n\n... (gekuerzt)";
+    content = content.substring(0, 8000) + "\n\n... (truncated)";
   }
 
   return title ? `# ${title}\n\n${content}` : content;
@@ -794,417 +809,417 @@ function buildClassUrl(className: string, version: string): string {
 const MODULE_BEST_PRACTICES: Record<string, string> = {
   FI: `# SAP FI (Financial Accounting) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- BKPF/BSEG — Belegkopf/-positionen
-- BSID/BSAD — Debitoreneinzelposten (offen/ausgeglichen)
-- BSIK/BSAK — Kreditoreneinzelposten (offen/ausgeglichen)
-- SKA1/SKB1 — Sachkonten (Plan/Buchungskreis)
-- T001 — Buchungskreise
+## Important Tables & Structures
+- BKPF/BSEG — Document header/line items
+- BSID/BSAD — Customer open items (open/cleared)
+- BSIK/BSAK — Vendor open items (open/cleared)
+- SKA1/SKB1 — G/L accounts (chart/company code)
+- T001 — Company codes
 
-## Empfohlene BAPIs & Klassen
-- BAPI_ACC_DOCUMENT_POST — Buchungsbelege erfassen (statt FB01 direkt)
-- BAPI_ACC_DOCUMENT_REV_POST — Storno
-- CL_ACC_DOCUMENT — OO-API für Belege (S/4HANA)
-- BAPI_COMPANYCODE_GETLIST — Buchungskreise lesen
+## Recommended BAPIs & Classes
+- BAPI_ACC_DOCUMENT_POST — Post accounting documents (instead of FB01 directly)
+- BAPI_ACC_DOCUMENT_REV_POST — Reverse document
+- CL_ACC_DOCUMENT — OO API for documents (S/4HANA)
+- BAPI_COMPANYCODE_GETLIST — Read company codes
 
-## Coding-Richtlinien
-- NIE direkt in BKPF/BSEG schreiben — immer BAPIs oder ACC-Klassen verwenden
-- Buchungslogik über BAPI_ACC_DOCUMENT_POST, nicht BDC auf FB01
-- Steuerberechnung dem System überlassen (CALCULATE_TAX_FROM_NET_AMOUNT)
-- Währungsumrechnung: CONVERT_TO_LOCAL_CURRENCY
+## Coding Guidelines
+- NEVER write directly to BKPF/BSEG — always use BAPIs or ACC classes
+- Posting logic via BAPI_ACC_DOCUMENT_POST, not BDC on FB01
+- Leave tax calculation to the system (CALCULATE_TAX_FROM_NET_AMOUNT)
+- Currency conversion: CONVERT_TO_LOCAL_CURRENCY
 
-## Häufige Fehler
-- Direkte BSEG-Selects ohne Index → Performance-Probleme (BSEG ist Cluster-Tabelle!)
-- In S/4HANA: BSEG ist View auf ACDOCA → SELECT auf ACDOCA nutzen
-- Fehlende BAPI_TRANSACTION_COMMIT nach BAPI-Aufrufen
-- Währungsfelder ohne Referenz auf Währungsschlüssel
+## Common Errors
+- Direct BSEG selects without index → performance problems (BSEG is a cluster table!)
+- In S/4HANA: BSEG is a view on ACDOCA → use SELECT on ACDOCA
+- Missing BAPI_TRANSACTION_COMMIT after BAPI calls
+- Currency fields without reference to currency key
 
-## S/4HANA-Migration
+## S/4HANA Migration
 - BSEG → ACDOCA (Universal Journal)
-- Neue CDS Views: I_JournalEntry, I_OperationalAcctgDocItem
-- FAGL_SPLITTER ersetzt klassisches Splitting`,
+- New CDS Views: I_JournalEntry, I_OperationalAcctgDocItem
+- FAGL_SPLITTER replaces classic splitting`,
 
   CO: `# SAP CO (Controlling) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- CSKS/CSKT — Kostenstellen (Stamm/Texte)
-- CSKA/CSKB — Kostenarten
-- COBK/COEP — CO-Belegkopf/-positionen
-- COSS/COSP — Summen Stat./Plan
-- AUFK — Innenaufträge
+## Important Tables & Structures
+- CSKS/CSKT — Cost centers (master/texts)
+- CSKA/CSKB — Cost elements
+- COBK/COEP — CO document header/line items
+- COSS/COSP — Statistical/plan totals
+- AUFK — Internal orders
 
-## Empfohlene BAPIs & Klassen
-- BAPI_COSTCENTER_GETLIST — Kostenstellen lesen
-- BAPI_INTERNALORDER_GETLIST — Aufträge lesen
-- K_ORDER_READ — Auftragsdaten lesen
-- BAPI_ACC_ACTIVITY_ALLOC_POST — Leistungsverrechnung
+## Recommended BAPIs & Classes
+- BAPI_COSTCENTER_GETLIST — Read cost centers
+- BAPI_INTERNALORDER_GETLIST — Read orders
+- K_ORDER_READ — Read order data
+- BAPI_ACC_ACTIVITY_ALLOC_POST — Activity allocation
 
-## Coding-Richtlinien
-- CO-Buchungen immer über BAPIs, nie direkt auf COEP
-- Kostenstellenhierarchien über SET-Funktionsbausteine lesen
-- Planwerte über BAPI_COSTCENTER_PLAN_POST
-- CO-PA: COPA_FUNCTION_MODULE-Aufrufe für Ergebnisobjekte
+## Coding Guidelines
+- CO postings always via BAPIs, never directly on COEP
+- Read cost center hierarchies via SET function modules
+- Plan values via BAPI_COSTCENTER_PLAN_POST
+- CO-PA: COPA_FUNCTION_MODULE calls for profitability objects
 
-## Häufige Fehler
-- Fehlende Berechtigung auf CO-Objekte (Kostenrechnungskreis)
-- Periodenabgrenzung nicht beachtet bei Reports
-- CO-PA-Merkmale falsch zugeordnet
+## Common Errors
+- Missing authorization on CO objects (controlling area)
+- Period-end accruals not considered in reports
+- CO-PA characteristics incorrectly assigned
 
-## S/4HANA-Migration
-- CO-Belege in ACDOCA integriert
+## S/4HANA Migration
+- CO documents integrated in ACDOCA
 - CDS Views: I_CostCenter, I_InternalOrder
-- Embedded Analytics statt Report Painter/Writer`,
+- Embedded Analytics instead of Report Painter/Writer`,
 
   MM: `# SAP MM (Materials Management) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- MARA/MAKT/MARC/MARD — Materialstamm
-- EKKO/EKPO — Bestellkopf/-positionen
-- EBAN — Bestellanforderungen
-- MKPF/MSEG — Materialbelege
-- MCHB — Chargenbestände
+## Important Tables & Structures
+- MARA/MAKT/MARC/MARD — Material master
+- EKKO/EKPO — Purchase order header/line items
+- EBAN — Purchase requisitions
+- MKPF/MSEG — Material documents
+- MCHB — Batch stock
 
-## Empfohlene BAPIs & Klassen
-- BAPI_PO_CREATE1 — Bestellung anlegen
-- BAPI_PR_CREATE — Bestellanforderung anlegen
-- BAPI_MATERIAL_GET_DETAIL — Materialstamm lesen
-- BAPI_GOODSMVT_CREATE — Warenbewegung buchen
-- CL_EXITHANDLER — BAdI-Implementierungen für MM-Erweiterungen
+## Recommended BAPIs & Classes
+- BAPI_PO_CREATE1 — Create purchase order
+- BAPI_PR_CREATE — Create purchase requisition
+- BAPI_MATERIAL_GET_DETAIL — Read material master
+- BAPI_GOODSMVT_CREATE — Post goods movement
+- CL_EXITHANDLER — BAdI implementations for MM enhancements
 
-## Coding-Richtlinien
-- Materialstamm lesen: BAPI_MATERIAL_GET_DETAIL oder SELECT auf MARA mit Buffering
-- Bestellungen: BAPI_PO_CREATE1 (nie ME_CREATE_PO direkt)
-- Warenbewegungen: BAPI_GOODSMVT_CREATE mit GM_CODE
-- Reservierungen: BAPI_RESERVATION_CREATE1
+## Coding Guidelines
+- Read material master: BAPI_MATERIAL_GET_DETAIL or SELECT on MARA with buffering
+- Purchase orders: BAPI_PO_CREATE1 (never ME_CREATE_PO directly)
+- Goods movements: BAPI_GOODSMVT_CREATE with GM_CODE
+- Reservations: BAPI_RESERVATION_CREATE1
 
-## Häufige Fehler
-- SELECT * auf MSEG ohne Einschränkung → riesige Datenmengen
-- Fehlende COMMIT WORK nach BAPI-Aufrufen
-- Mengeneinheit-Konvertierung vergessen (UNIT_CONVERSION_SIMPLE)
+## Common Errors
+- SELECT * on MSEG without restriction → huge data volumes
+- Missing COMMIT WORK after BAPI calls
+- Unit of measure conversion forgotten (UNIT_CONVERSION_SIMPLE)
 
-## S/4HANA-Migration
-- MARD vereinfacht (kein LQUA mehr direkt)
-- MATDOC ersetzt MKPF/MSEG für neue Belege
+## S/4HANA Migration
+- MARD simplified (no LQUA directly anymore)
+- MATDOC replaces MKPF/MSEG for new documents
 - CDS Views: I_PurchaseOrderAPI01, I_Material`,
 
   SD: `# SAP SD (Sales & Distribution) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- VBAK/VBAP — Kundenauftragskopf/-positionen
-- LIKP/LIPS — Lieferungskopf/-positionen
-- VBRK/VBRP — Fakturakopf/-positionen
-- KNA1/KNVV — Debitorenstamm
-- KONV — Konditionen
+## Important Tables & Structures
+- VBAK/VBAP — Sales order header/line items
+- LIKP/LIPS — Delivery header/line items
+- VBRK/VBRP — Billing document header/line items
+- KNA1/KNVV — Customer master
+- KONV — Conditions
 
-## Empfohlene BAPIs & Klassen
-- BAPI_SALESORDER_CREATEFROMDAT2 — Kundenauftrag anlegen
-- BAPI_DELIVERY_GETLIST — Lieferungen lesen
-- BAPI_BILLINGDOC_CREATEMULTIPLE — Faktura anlegen
-- SD_SALESDOCUMENT_CREATE — neuere API
+## Recommended BAPIs & Classes
+- BAPI_SALESORDER_CREATEFROMDAT2 — Create sales order
+- BAPI_DELIVERY_GETLIST — Read deliveries
+- BAPI_BILLINGDOC_CREATEMULTIPLE — Create billing document
+- SD_SALESDOCUMENT_CREATE — newer API
 
-## Coding-Richtlinien
-- Aufträge über BAPIs anlegen, nicht BDC auf VA01
-- Preisfindung: Pricing-BAdIs nutzen, nicht KONV direkt ändern
-- Verfügbarkeit: ATP-Funktionsbausteine (AVAILABILITY_CHECK)
-- Partnerfindung: Standard-Partnerschema respektieren
+## Coding Guidelines
+- Create orders via BAPIs, not BDC on VA01
+- Pricing: use pricing BAdIs, do not change KONV directly
+- Availability: ATP function modules (AVAILABILITY_CHECK)
+- Partner determination: respect standard partner schema
 
-## Häufige Fehler
-- VBAP-SELECT ohne Auftragsart-Einschränkung → Performance
-- Konditionstechnik umgehen statt richtig konfigurieren
-- Fehlende Berechtigungsprüfungen auf Verkaufsorganisation
+## Common Errors
+- VBAP SELECT without order type restriction → performance
+- Bypassing condition technique instead of configuring correctly
+- Missing authorization checks on sales organization
 
-## S/4HANA-Migration
+## S/4HANA Migration
 - CDS Views: I_SalesOrder, I_SalesOrderItem, I_BillingDocument
-- Credit Management über SAP Credit Management (FIN-FSCM-CR)
-- Output Management über BRF+`,
+- Credit management via SAP Credit Management (FIN-FSCM-CR)
+- Output management via BRF+`,
 
   PP: `# SAP PP (Production Planning) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- AFKO/AFPO — Fertigungsauftragskopf/-positionen
-- AFVC/AFVV — Vorgänge/Vorgangswerte
-- STKO/STPO — Stücklisten
-- PLKO/PLPO — Arbeitspläne
-- RESB — Reservierungen
+## Important Tables & Structures
+- AFKO/AFPO — Production order header/line items
+- AFVC/AFVV — Operations/operation values
+- STKO/STPO — Bills of material
+- PLKO/PLPO — Routings
+- RESB — Reservations
 
-## Empfohlene BAPIs & Klassen
-- BAPI_PRODORD_CREATE — Fertigungsauftrag anlegen
-- BAPI_PRODORD_RELEASE — Auftrag freigeben
-- BAPI_GOODSMVT_CREATE — Rückmeldung/Warenbewegung
-- CS_BOM_EXPL_MAT_V2 — Stücklistenauflösung
+## Recommended BAPIs & Classes
+- BAPI_PRODORD_CREATE — Create production order
+- BAPI_PRODORD_RELEASE — Release order
+- BAPI_GOODSMVT_CREATE — Confirmation/goods movement
+- CS_BOM_EXPL_MAT_V2 — BOM explosion
 
-## Coding-Richtlinien
-- Fertigungsaufträge: BAPIs verwenden, nicht CO01-BDC
-- Stücklisten: CS_BOM_EXPL_MAT_V2 für Auflösung
-- Kapazitätsplanung: Standard-FBs nutzen
-- Rückmeldungen: BAPI_PRODORDCONF_CREATE_TT
+## Coding Guidelines
+- Production orders: use BAPIs, not CO01 BDC
+- BOMs: CS_BOM_EXPL_MAT_V2 for explosion
+- Capacity planning: use standard function modules
+- Confirmations: BAPI_PRODORDCONF_CREATE_TT
 
-## Häufige Fehler
-- Stücklistenauflösung ohne Stichtag
-- Fehlende Statusprüfung vor Auftragsoperationen
-- Performance bei massenhafter Stücklistenauflösung
+## Common Errors
+- BOM explosion without key date
+- Missing status check before order operations
+- Performance with mass BOM explosions
 
-## S/4HANA-Migration
+## S/4HANA Migration
 - CDS Views: I_ProductionOrder, I_ManufacturingOrder
-- PP/DS ersetzt teilweise klassische Planung`,
+- PP/DS partially replaces classic planning`,
 
   PM: `# SAP PM (Plant Maintenance) — Best Practices
 
-## Wichtige Tabellen & Strukturen
+## Important Tables & Structures
 - EQUI/EQKT — Equipment
-- IFLO/IFLOT — Technische Plätze
-- AUFK — PM-Aufträge
-- AFIH — Instandhaltungskopf
-- QMEL — Meldungen
+- IFLO/IFLOT — Functional locations
+- AUFK — PM orders
+- AFIH — Maintenance order header
+- QMEL — Notifications
 
-## Empfohlene BAPIs & Klassen
-- BAPI_EQUI_CREATE — Equipment anlegen
-- BAPI_ALM_ORDER_MAINTAIN — PM-Auftrag pflegen
-- BAPI_ALM_NOTIF_CREATE — Meldung anlegen
-- BAPI_FUNCLOC_CREATE — Technischen Platz anlegen
+## Recommended BAPIs & Classes
+- BAPI_EQUI_CREATE — Create equipment
+- BAPI_ALM_ORDER_MAINTAIN — Maintain PM order
+- BAPI_ALM_NOTIF_CREATE — Create notification
+- BAPI_FUNCLOC_CREATE — Create functional location
 
-## Coding-Richtlinien
-- PM-Aufträge: BAPI_ALM_ORDER_MAINTAIN (Multi-Step)
-- Meldungen: BAPI_ALM_NOTIF_* Familie
-- Klassifizierung: BAPI_CLASSIFICATION_*
-- Messdokumente: MEASUREM_DOCUM_RFC_SINGLE_001
+## Coding Guidelines
+- PM orders: BAPI_ALM_ORDER_MAINTAIN (multi-step)
+- Notifications: BAPI_ALM_NOTIF_* family
+- Classification: BAPI_CLASSIFICATION_*
+- Measurement documents: MEASUREM_DOCUM_RFC_SINGLE_001
 
-## Häufige Fehler
-- Fehlende Partnerpflege bei Aufträgen
-- Statusnetz nicht beachtet
-- Equipment-Hierarchie fehlerhaft aufgebaut
+## Common Errors
+- Missing partner maintenance on orders
+- Status network not respected
+- Equipment hierarchy built incorrectly
 
-## S/4HANA-Migration
-- Asset Management Integration
+## S/4HANA Migration
+- Asset Management integration
 - CDS Views: I_MaintenanceOrder, I_FunctionalLocation`,
 
   QM: `# SAP QM (Quality Management) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- QALS — Prüflose
-- QASR — Stichprobenergebnisse
-- QAVE — Verwendungsentscheide
-- QMEL — Qualitätsmeldungen
-- QMFE — Fehler/Ursachen
+## Important Tables & Structures
+- QALS — Inspection lots
+- QASR — Sample results
+- QAVE — Usage decisions
+- QMEL — Quality notifications
+- QMFE — Defects/causes
 
-## Empfohlene BAPIs & Klassen
-- BAPI_QUALNOT_CREATE — Qualitätsmeldung anlegen
-- BAPI_INSPLOT_GETLIST — Prüflose lesen
-- QM_INSPECTION_LOT_CREATE — Prüflos anlegen
+## Recommended BAPIs & Classes
+- BAPI_QUALNOT_CREATE — Create quality notification
+- BAPI_INSPLOT_GETLIST — Read inspection lots
+- QM_INSPECTION_LOT_CREATE — Create inspection lot
 
-## Coding-Richtlinien
-- Prüflose nicht manuell erzeugen wenn automatische Losöffnung konfiguriert
-- Verwendungsentscheide: Standard-Workflow nutzen
-- Kataloge für Fehlerarten konsequent pflegen
+## Coding Guidelines
+- Do not manually create inspection lots if automatic lot opening is configured
+- Usage decisions: use standard workflow
+- Consistently maintain catalogs for defect types
 
-## Häufige Fehler
-- Prüfpunkt-Zuordnung in Arbeitsplänen vergessen
-- QM-Berechtigungen zu restriktiv/zu offen
-- Fehlende Dynamisierungsregeln bei Stichproben
+## Common Errors
+- Inspection point assignment in routings forgotten
+- QM authorizations too restrictive/too open
+- Missing dynamic modification rules for sampling
 
-## S/4HANA-Migration
-- Eingebettetes QM in S/4HANA Manufacturing
+## S/4HANA Migration
+- Embedded QM in S/4HANA Manufacturing
 - CDS Views: I_InspectionLot, I_QualityNotification`,
 
   HR: `# SAP HR/HCM (Human Capital Management) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- PA0001-PA0999 — Personalstamm-Infotypen
-- HRP1000/HRP1001 — OM-Objekte/Verknüpfungen
-- PCL1/PCL2 — Abrechnungscluster
-- PERNR — Personalnummer (zentrale Entität)
+## Important Tables & Structures
+- PA0001-PA0999 — HR master infotypes
+- HRP1000/HRP1001 — OM objects/relationships
+- PCL1/PCL2 — Payroll clusters
+- PERNR — Personnel number (central entity)
 
-## Empfohlene BAPIs & Klassen
-- HR_READ_INFOTYPE — Infotyp lesen (Standard-FB)
-- HR_INFOTYPE_OPERATION — Infotyp pflegen (INSS/MOD/DEL)
-- RH_READ_OBJECT — OM-Objekte lesen
-- CL_HR_PA_REQUEST_API — PA-Maßnahmen (neuere API)
+## Recommended BAPIs & Classes
+- HR_READ_INFOTYPE — Read infotype (standard FM)
+- HR_INFOTYPE_OPERATION — Maintain infotype (INSS/MOD/DEL)
+- RH_READ_OBJECT — Read OM objects
+- CL_HR_PA_REQUEST_API — PA actions (newer API)
 
-## Coding-Richtlinien
-- Infotypen: IMMER HR_READ_INFOTYPE / MACROS (RP-READ-INFOTYPE)
-- NIE direkt auf PA-Tabellen schreiben!
-- Berechtigungen: HR-Auth über PERNR + INFTY + SUBTY prüfen
-- Logische Datenbank PNP/PNPCE für Reports nutzen
-- Zeitwirtschaft: Schemas über PCRs anpassen, nicht hart codieren
+## Coding Guidelines
+- Infotypes: ALWAYS use HR_READ_INFOTYPE / MACROS (RP-READ-INFOTYPE)
+- NEVER write directly to PA tables!
+- Authorizations: check HR auth via PERNR + INFTY + SUBTY
+- Use logical database PNP/PNPCE for reports
+- Time management: customize schemas via PCRs, do not hard-code
 
-## Häufige Fehler
-- SELECT auf PA-Tabellen ohne Begda/Endda-Logik
-- Cluster-Tabellen (PCL*) direkt lesen statt über Makros
-- Fehlende Berücksichtigung von Gültigkeitszeiträumen
-- MOLGA-abhängige Logik nicht berücksichtigt
+## Common Errors
+- SELECT on PA tables without BEGDA/ENDDA logic
+- Reading cluster tables (PCL*) directly instead of via macros
+- Missing consideration of validity periods
+- MOLGA-dependent logic not accounted for
 
-## S/4HANA-Migration
-- SAP SuccessFactors für Cloud-HCM
-- On-Premise: HCM for S/4HANA (Kompatibilitätspaket)
-- Employee Central als Master für Stammdaten`,
+## S/4HANA Migration
+- SAP SuccessFactors for cloud HCM
+- On-premise: HCM for S/4HANA (compatibility package)
+- Employee Central as master for master data`,
 
   PS: `# SAP PS (Project System) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- PROJ — Projektdefinition
-- PRPS — PSP-Elemente
-- AUFK — PS-Netzpläne/Aufträge
-- AFVC — Vorgänge
-- BPGE/BPJA — Budgetwerte
+## Important Tables & Structures
+- PROJ — Project definition
+- PRPS — WBS elements
+- AUFK — PS networks/orders
+- AFVC — Operations
+- BPGE/BPJA — Budget values
 
-## Empfohlene BAPIs & Klassen
-- BAPI_PS_INITIALIZATION — PS-APIs initialisieren
-- BAPI_PS_CREATE_WBS_ELEMENT — PSP-Element anlegen
-- BAPI_NETWORK_MAINTAIN — Netzplan pflegen
-- BAPI_PROJECT_MAINTAIN — Projekt pflegen
+## Recommended BAPIs & Classes
+- BAPI_PS_INITIALIZATION — Initialize PS APIs
+- BAPI_PS_CREATE_WBS_ELEMENT — Create WBS element
+- BAPI_NETWORK_MAINTAIN — Maintain network
+- BAPI_PROJECT_MAINTAIN — Maintain project
 
-## Coding-Richtlinien
-- PS-APIs immer im Buffer-Modus (INIT → Operationen → SAVE)
-- Projekthierarchie: Top-Down aufbauen
-- Budget: Über BAPIs, nicht direkt auf BPGE
-- Terminierung: Standard-Terminierungsfunktionen nutzen
+## Coding Guidelines
+- PS APIs always in buffer mode (INIT → operations → SAVE)
+- Project hierarchy: build top-down
+- Budget: via BAPIs, not directly on BPGE
+- Scheduling: use standard scheduling functions
 
-## Häufige Fehler
-- BAPI_PS_PRECOMMIT vor BAPI_TRANSACTION_COMMIT vergessen
-- Hierarchie-Ebenen durcheinander
-- Statusprofil nicht berücksichtigt
+## Common Errors
+- BAPI_PS_PRECOMMIT before BAPI_TRANSACTION_COMMIT forgotten
+- Hierarchy levels mixed up
+- Status profile not considered
 
-## S/4HANA-Migration
+## S/4HANA Migration
 - Commercial Project Management (CPM)
 - CDS Views: I_Project, I_WBSElement`,
 
   WM: `# SAP WM/EWM (Warehouse Management) — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- LQUA — Quants (Lagerbestände)
-- LTAP/LTAK — Transportaufträge
-- LAGP — Lagerplätze
-- T300/T301 — Lager-/Lagertyp-Customizing
-- LEIN — Lagereinheiten
+## Important Tables & Structures
+- LQUA — Quants (warehouse stock)
+- LTAP/LTAK — Transfer orders
+- LAGP — Storage bins
+- T300/T301 — Warehouse/storage type customizing
+- LEIN — Handling units
 
-## Empfohlene BAPIs & Klassen
-- BAPI_WHSE_TO_CREATE_STOCK — Transportauftrag anlegen
-- L_TO_CREATE_MOVE_SU — TA für Lagereinheit
-- BAPI_WHSE_STOCK_GET_LIST — Bestände lesen
+## Recommended BAPIs & Classes
+- BAPI_WHSE_TO_CREATE_STOCK — Create transfer order
+- L_TO_CREATE_MOVE_SU — TO for handling unit
+- BAPI_WHSE_STOCK_GET_LIST — Read stock
 
-## Coding-Richtlinien
-- Transportaufträge: Immer über BAPIs/Standard-FBs
-- Lagerplatzfindung: Putaway-Strategien konfigurieren, nicht hart codieren
-- Inventur: Standard-Transaktionen MI*/LI* nutzen
+## Coding Guidelines
+- Transfer orders: always via BAPIs/standard function modules
+- Storage bin determination: configure putaway strategies, do not hard-code
+- Inventory: use standard transactions MI*/LI*
 
-## Häufige Fehler
-- Quant-Tabelle (LQUA) direkt modifizieren
-- Fehlende Quittierung von Transportaufträgen
-- WM-MM-Integration: Bestandsdifferenzen durch fehlende TA-Quittierung
+## Common Errors
+- Directly modifying quant table (LQUA)
+- Missing confirmation of transfer orders
+- WM-MM integration: stock differences due to missing TO confirmation
 
-## S/4HANA-Migration
-- WM → EWM (Embedded oder Dezentral)
-- Stock Room Management als einfache Alternative
-- EWM: /SCWM/ Namespace, CDS Views verfügbar`,
+## S/4HANA Migration
+- WM → EWM (embedded or decentralized)
+- Stock Room Management as simpler alternative
+- EWM: /SCWM/ namespace, CDS Views available`,
 
   EWM: `# SAP EWM (Extended Warehouse Management) — Best Practices
 
-## Wichtige Tabellen & Strukturen
+## Important Tables & Structures
 - /SCWM/AQUA — Quants
 - /SCWM/ORDIM_O — Warehouse Tasks
 - /SCWM/LAGP — Storage Bins
 - /SCWM/WHO — Warehouse Orders
 
-## Empfohlene Klassen
-- /SCWM/CL_WM_PACKING — Packlogik
-- /SCWM/CL_SR_BOM — Stücklisten im Lager
-- PPF (Post Processing Framework) für Automatisierung
+## Recommended Classes
+- /SCWM/CL_WM_PACKING — Packing logic
+- /SCWM/CL_SR_BOM — BOMs in warehouse
+- PPF (Post Processing Framework) for automation
 
-## Coding-Richtlinien
-- BAdIs für Prozessanpassungen (z.B. /SCWM/EX_HUOPT)
-- Warehouse Tasks über Standard-APIs erstellen
-- RF-Framework für mobile Dialoge nutzen
+## Coding Guidelines
+- BAdIs for process customization (e.g. /SCWM/EX_HUOPT)
+- Create warehouse tasks via standard APIs
+- Use RF framework for mobile dialogs
 
-## Häufige Fehler
-- Direkte Tabellenmanipulation statt API-Nutzung
-- EWM-ERP-Integration: IDoc-Verarbeitung nicht überwacht
-- Fehlende Exception Handling bei /SCWM/-APIs
+## Common Errors
+- Direct table manipulation instead of using APIs
+- EWM-ERP integration: IDoc processing not monitored
+- Missing exception handling for /SCWM/ APIs
 
-## S/4HANA-Migration
-- Embedded EWM direkt in S/4HANA verfügbar
-- Dezentrales EWM für komplexe Szenarien`,
+## S/4HANA Migration
+- Embedded EWM available directly in S/4HANA
+- Decentralized EWM for complex scenarios`,
 
   BASIS: `# SAP BASIS/BC — Best Practices
 
-## Wichtige Tabellen & Strukturen
-- USR02 — Benutzerstamm
-- TVARVC — Selektionsvariablen
-- TBTCO/TBTCP — Job-Übersicht
-- E070/E071 — Transporte
-- TADIR — Objektkatalog
+## Important Tables & Structures
+- USR02 — User master
+- TVARVC — Selection variables
+- TBTCO/TBTCP — Job overview
+- E070/E071 — Transports
+- TADIR — Object catalog
 
-## Empfohlene Klassen & FBs
+## Recommended Classes & FMs
 - CL_LOG_PPF — Application Log
-- BAL_LOG_CREATE / BAL_LOG_MSG_ADD — Application Log (klassisch)
-- JOB_OPEN / JOB_SUBMIT / JOB_CLOSE — Hintergrundverarbeitung
-- CL_BCS — Business Communication Services (E-Mail)
-- CL_GUI_FRONTEND_SERVICES — Datei-Up/Download
+- BAL_LOG_CREATE / BAL_LOG_MSG_ADD — Application Log (classic)
+- JOB_OPEN / JOB_SUBMIT / JOB_CLOSE — Background processing
+- CL_BCS — Business Communication Services (e-mail)
+- CL_GUI_FRONTEND_SERVICES — File up/download
 
-## Coding-Richtlinien
-- Logging: Application Log (BAL) oder CL_LOG_PPF nutzen, nicht WRITE
-- Jobs: JOB_OPEN/SUBMIT/CLOSE für Hintergrundverarbeitung
-- Berechtigungen: AUTHORITY-CHECK immer mit spezifischen Objekten
-- Konfiguration: TVARVC für variable Parameter statt Hardcoding
-- Sperren: Enqueue/Dequeue FBs für eigene Sperrobjekte
+## Coding Guidelines
+- Logging: use Application Log (BAL) or CL_LOG_PPF, not WRITE
+- Jobs: JOB_OPEN/SUBMIT/CLOSE for background processing
+- Authorizations: AUTHORITY-CHECK always with specific objects
+- Configuration: TVARVC for variable parameters instead of hard-coding
+- Locks: Enqueue/Dequeue FMs for own lock objects
 
-## Häufige Fehler
-- AUTHORITY-CHECK vergessen oder zu generisch
-- Sperrobjekte nicht freigegeben (Enqueue ohne Dequeue)
-- Hardcodierte Mandanten/Systemnummern
-- COMMIT WORK in Update-Task-FBs
+## Common Errors
+- AUTHORITY-CHECK forgotten or too generic
+- Lock objects not released (Enqueue without Dequeue)
+- Hard-coded client/system numbers
+- COMMIT WORK in update-task FMs
 
-## S/4HANA-Migration
-- ABAP Platform: Cloud-fähiges ABAP
-- Released APIs beachten (Whitelist)
-- CL_ABAP_CONTEXT_INFO statt SY-UNAME/SY-DATUM direkt`,
+## S/4HANA Migration
+- ABAP Platform: cloud-capable ABAP
+- Respect released APIs (whitelist)
+- CL_ABAP_CONTEXT_INFO instead of SY-UNAME/SY-DATUM directly`,
 
-  ABAP: `# ABAP — Allgemeine Best Practices
+  ABAP: `# ABAP — General Best Practices
 
-## Clean ABAP Prinzipien
-- Inline-Deklarationen: DATA(lv_var), FIELD-SYMBOL(<fs>)
-- String Templates: |Text { lv_var }| statt CONCATENATE
-- NEW #() / VALUE #() / CONV #() — Constructor Expressions
-- COND #() / SWITCH #() statt IF/CASE für Zuweisungen
-- REDUCE #() für Aggregationen
-- FILTER #() statt LOOP + IF
+## Clean ABAP Principles
+- Inline declarations: DATA(lv_var), FIELD-SYMBOL(<fs>)
+- String templates: |Text { lv_var }| instead of CONCATENATE
+- NEW #() / VALUE #() / CONV #() — constructor expressions
+- COND #() / SWITCH #() instead of IF/CASE for assignments
+- REDUCE #() for aggregations
+- FILTER #() instead of LOOP + IF
 
-## Moderne ABAP SQL
-- SELECT ... INTO TABLE @DATA(lt_result) — Host-Variablen mit @
-- SELECT ... FROM ... JOIN — statt FOR ALL ENTRIES
-- CDS Views für komplexe Abfragen
-- ABAP SQL Aggregationen statt ABAP LOOP + COLLECT
+## Modern ABAP SQL
+- SELECT ... INTO TABLE @DATA(lt_result) — host variables with @
+- SELECT ... FROM ... JOIN — instead of FOR ALL ENTRIES
+- CDS Views for complex queries
+- ABAP SQL aggregations instead of ABAP LOOP + COLLECT
 
-## OOP-Richtlinien
-- Klassen/Interfaces statt Funktionsbausteine für neue Logik
-- Dependency Injection über Interfaces (Testbarkeit)
-- SOLID-Prinzipien beachten
-- Ausnahmen: CX_*-Klassen, TRY/CATCH statt SY-SUBRC
+## OOP Guidelines
+- Classes/interfaces instead of function modules for new logic
+- Dependency injection via interfaces (testability)
+- Respect SOLID principles
+- Exceptions: CX_* classes, TRY/CATCH instead of SY-SUBRC
 
 ## Performance
-- SELECT nur benötigte Felder, nie SELECT *
-- Interne Tabellen: SORTED/HASHED TABLE für häufige Zugriffe
-- PARALLEL CURSOR für verschachtelte LOOPs
-- Pufferung: Tabellenpufferung konfigurieren, Single-Record-Buffer nutzen
-- FOR ALL ENTRIES: Duplikate und leere Tabelle prüfen!
+- SELECT only required fields, never SELECT *
+- Internal tables: SORTED/HASHED TABLE for frequent access
+- PARALLEL CURSOR for nested LOOPs
+- Buffering: configure table buffering, use single-record buffer
+- FOR ALL ENTRIES: check for duplicates and empty table!
 
-## Vermeidung obsoleter Anweisungen
-- MOVE → = (Zuweisung)
-- COMPUTE → direkte Berechnung
-- CHECK in Methoden → IF + RETURN
-- FORM/PERFORM → Methoden
-- Kopfzeilen-Tabellen → separate Workarea
+## Avoiding Obsolete Statements
+- MOVE → = (assignment)
+- COMPUTE → direct calculation
+- CHECK in methods → IF + RETURN
+- FORM/PERFORM → methods
+- Header-line tables → separate work area
 
-## Testbarkeit
+## Testability
 - ABAP Unit: CL_ABAP_UNIT_ASSERT
-- Test-Doubles: CL_ABAP_TESTDOUBLE
-- Test-Seams: IF_OSQL_TEST_ENVIRONMENT für DB
+- Test doubles: CL_ABAP_TESTDOUBLE
+- Test seams: IF_OSQL_TEST_ENVIRONMENT for DB
 - SQL Test Double Framework
 
-## S/4HANA Kompatibilität
-- Released APIs prüfen (Whitelist-Ansatz)
-- CL_ABAP_CONTEXT_INFO nutzen
-- RAP (RESTful ABAP Programming) für neue Apps
-- CDS Views als zentrale Datenmodelle`,
+## S/4HANA Compatibility
+- Check released APIs (whitelist approach)
+- Use CL_ABAP_CONTEXT_INFO
+- RAP (RESTful ABAP Programming) for new apps
+- CDS Views as central data models`,
 };
 
 // Aliases: HCM → HR, BC → BASIS
@@ -1217,7 +1232,7 @@ MODULE_BEST_PRACTICES["BC"] = MODULE_BEST_PRACTICES["BASIS"];
 
 function formatActivationMessages(messages: ActivationResultMessage[]): string[] {
   return messages.map(m =>
-    `  [${m.type}] ${m.shortText}${m.line ? ` (Zeile ${m.line})` : ""}${m.objDescr ? ` — ${m.objDescr}` : ""}`
+    `  [${m.type}] ${m.shortText}${m.line ? ` (line ${m.line})` : ""}${m.objDescr ? ` — ${m.objDescr}` : ""}`
   );
 }
 
@@ -1236,94 +1251,94 @@ async function writeWorkflow(
     let lockHandle: string | undefined;
     try {
       // Phase 1: lock → write → unlock (stateful session needed for lock/write)
-      log.push(`🔒 Sperren: ${objectUrl}`);
-      // Direkter Lock — withStatefulSession verwaltet die Session bereits
+      log.push(`🔒 Locking: ${objectUrl}`);
+      // Direct lock — withStatefulSession already manages the session
       const lock = await client.lock(objectUrl);
       lockHandle = lock.LOCK_HANDLE;
-      if (!lockHandle) throw new Error("Lock fehlgeschlagen — kein Lock-Handle erhalten");
-      log.push(`✅ Lock erhalten`);
-      await onProgress?.("🔒 Lock erhalten");
+      if (!lockHandle) throw new Error("Lock failed — no lock handle received");
+      log.push(`✅ Lock acquired`);
+      await onProgress?.("🔒 Lock acquired");
 
-      log.push(`✏️  Quellcode schreiben (${source.length} Zeichen)...`);
+      log.push(`✏️  Writing source code (${source.length} characters)...`);
       const sourceUrl = objectUrl.endsWith("/source/main") ? objectUrl : `${objectUrl}/source/main`;
       await client.setObjectSource(sourceUrl, source, lockHandle, transport || undefined);
-      log.push("✅ Quellcode gespeichert");
-      await onProgress?.("✏️ Quellcode gespeichert");
+      log.push("✅ Source code saved");
+      await onProgress?.("✏️ Source code saved");
 
-      // Frühe DDIC-Validierung verhindert typische Endlosschleifen mit Feldnamenfehlern
+      // Early DDIC validation prevents typical infinite loops caused by field name errors
       const ddicCheck = await validateDdicReferencesInternal(client, source);
       if (ddicCheck.tableCount > 0) {
-        log.push(`🔎 DDIC-Validierung: ${ddicCheck.tableCount} Tabellen/Strukturen geprüft`);
+        log.push(`🔎 DDIC validation: ${ddicCheck.tableCount} tables/structures checked`);
       }
       if (ddicCheck.invalid.length > 0) {
-        log.push("❌ DDIC-Validierung fehlgeschlagen — Code NICHT aktiviert.");
+        log.push("❌ DDIC validation failed — code NOT activated.");
         log.push(...ddicCheck.invalid.slice(0, 50));
         if (ddicCheck.invalid.length > 50) {
-          log.push(`... und ${ddicCheck.invalid.length - 50} weitere DDIC-Fehler`);
+          log.push(`... and ${ddicCheck.invalid.length - 50} more DDIC errors`);
         }
-        log.push("👉 Bitte korrigiere die ungültigen Feldnamen und rufe write_abap_source erneut auf.");
+        log.push("👉 Please fix the invalid field names and call write_abap_source again.");
         return { success: false, log, syntaxErrors: ddicCheck.invalid };
       }
 
       // Phase 2: unlock + syntaxCheck in parallel (no lock needed for check)
-      log.push("🔓 Lock freigeben + 🔍 Syntaxcheck (parallel)...");
+      log.push("🔓 Releasing lock + 🔍 Syntax check (parallel)...");
       const syntaxContext = await resolveSyntaxContext(client, objectUrl, mainProgram, log);
       const [, syntaxRes] = await Promise.all([
         client.unLock(objectUrl, lockHandle).catch((e) => {
-          log.push(`⚠️ Unlock fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
+          log.push(`⚠️ Unlock failed: ${e instanceof Error ? e.message : String(e)}`);
         }),
         !skipCheck
           ? client.syntaxCheck(objectUrl, syntaxContext, source).catch((e) => {
-              log.push(`⚠️ Syntaxcheck fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
+              log.push(`⚠️ Syntax check failed: ${e instanceof Error ? e.message : String(e)}`);
               return null; // null = check failed
             })
           : Promise.resolve(undefined),
       ]);
       lockHandle = undefined;
-      log.push("✅ Lock freigegeben");
+      log.push("✅ Lock released");
 
       // Process syntaxRes (undefined = skipped, null = error, array = result)
       if (!skipCheck && syntaxRes !== undefined) {
         if (syntaxRes === null) {
-          log.push("👉 Syntaxcheck übersprungen — Code wurde gespeichert. Bitte manuell prüfen.");
+          log.push("👉 Syntax check skipped — code was saved. Please check manually.");
           return { success: false, log };
         }
         const errs = (Array.isArray(syntaxRes) ? syntaxRes : []).filter(
           (m: { severity: string }) => ["E", "A"].includes(m.severity));
         if (errs.length > 0) {
-          const msgs = errs.map((e: { text: string; line?: number }) => `  Zeile ${e.line ?? "?"}: ${e.text}`);
-          log.push(`❌ ${errs.length} Syntaxfehler — Code NICHT aktiviert.`);
-          log.push("👉 Bitte korrigiere die Fehler und rufe write_abap_source erneut auf!");
+          const msgs = errs.map((e: { text: string; line?: number }) => `  Line ${e.line ?? "?"}: ${e.text}`);
+          log.push(`❌ ${errs.length} syntax error(s) — code NOT activated.`);
+          log.push("👉 Please fix the errors and call write_abap_source again!");
           return { success: false, log, syntaxErrors: msgs };
         }
-        log.push("✅ Syntaxcheck OK");
-        await onProgress?.("🔍 Syntaxcheck OK — aktiviere...");
+        log.push("✅ Syntax check OK");
+        await onProgress?.("🔍 Syntax check OK — activating...");
       }
 
       if (activate) {
-        log.push("🚀 Aktivieren...");
+        log.push("🚀 Activating...");
         const segments = objectUrl.replace(/[?#].*$/, "").split("/").filter(Boolean);
         const name = segments[segments.length - 1] ?? objectUrl;
 
-        // Include-Programme brauchen das Hauptprogramm als Kontext für die Aktivierung,
-        // da sie alleine nicht aktivierbar sind (referenzieren Variablen des Hauptprogramms).
+        // Include programs need the main program as context for activation,
+        // because they cannot be activated alone (they reference variables of the main program).
         let activationContext: string | undefined;
         const isInclude = objectUrl.includes("/programs/includes/");
         if (isInclude) {
           const resolvedMain = resolveMainProgram(mainProgram);
           if (resolvedMain) {
             activationContext = resolvedMain;
-            log.push(`📎 Include — Aktivierung im Kontext von: ${mainProgram}`);
+            log.push(`📎 Include — activating in context of: ${mainProgram}`);
           } else {
-            // Hauptprogramm automatisch ermitteln
+            // Automatically determine main program
             try {
               const mains = await client.mainPrograms(objectUrl);
               if (mains.length > 0) {
                 activationContext = mains[0]["adtcore:uri"];
-                log.push(`📎 Include — Hauptprogramm automatisch ermittelt: ${mains[0]["adtcore:name"]}`);
+                log.push(`📎 Include — main program automatically determined: ${mains[0]["adtcore:name"]}`);
               }
             } catch (mpErr) {
-              log.push(`⚠️  Hauptprogramm konnte nicht ermittelt werden: ${String(mpErr instanceof Error ? mpErr.message : mpErr)}`);
+              log.push(`⚠️  Main program could not be determined: ${String(mpErr instanceof Error ? mpErr.message : mpErr)}`);
             }
           }
         }
@@ -1331,25 +1346,25 @@ async function writeWorkflow(
         const activationResult = await client.activate(name, objectUrl, activationContext);
         if (!activationResult.success) {
           const msgs = formatActivationMessages(activationResult.messages);
-          log.push(`❌ Aktivierung fehlgeschlagen — Code wurde gespeichert aber NICHT aktiviert.`);
+          log.push(`❌ Activation failed — code was saved but NOT activated.`);
           if (msgs.length > 0) log.push(...msgs);
-          log.push("👉 Bitte analysiere die Fehler, korrigiere den Code und rufe write_abap_source erneut auf!");
+          log.push("👉 Please analyze the errors, fix the code and call write_abap_source again!");
           return { success: false, log };
         }
         if (activationResult.messages.length > 0) {
-          log.push("✅ Aktiviert (mit Hinweisen):");
+          log.push("✅ Activated (with notices):");
           log.push(...formatActivationMessages(activationResult.messages));
         } else {
-          log.push("✅ Aktiviert");
+          log.push("✅ Activated");
         }
-        await onProgress?.("✅ Aktiviert");
+        await onProgress?.("✅ Activated");
       }
 
       return { success: true, log };
     } catch (err) {
       if (lockHandle) {
-        try { await client.unLock(objectUrl, lockHandle); log.push("🔓 Lock nach Fehler freigegeben"); }
-        catch { log.push("⚠️  Lock konnte nicht freigegeben werden — dropSession in finally wird aufräumen"); }
+        try { await client.unLock(objectUrl, lockHandle); log.push("🔓 Lock released after error"); }
+        catch { log.push("⚠️  Lock could not be released — dropSession in finally will clean up"); }
         lockHandle = undefined;
       }
       throw err;
@@ -1366,182 +1381,182 @@ interface ToolDef { name: string; description: string; schema: z.ZodTypeAny }
 const TOOLS: ToolDef[] = [
   // ── SEARCH ─────────────────────────────────────────────────────────────
   { name: "search_abap_objects",
-    description: "Suche nach ABAP-Objekten per Namensmuster. Wildcards (*) werden unterstützt. Liefert Name, Typ, ADT-URI und Paket. Unterstützt 30+ Objekttypen (Programme, Klassen, FuGr, CDS, Tabellen, Domain, Datenelement, Messages usw.).",
+    description: "Search for ABAP objects by name pattern. Wildcards (*) are supported. Returns name, type, ADT URI and package. Supports 30+ object types (programs, classes, function groups, CDS, tables, domains, data elements, messages, etc.).",
     schema: S_Search },
 
   // ── READ ────────────────────────────────────────────────────────────────
   { name: "read_abap_source",
-    description: "Liest den Quellcode eines ABAP-Objekts. Mit includeRelated=true werden automatisch alle zugehörigen Objekte mitgelesen: Klassen-Includes (Definitionen, Implementierungen, Macros, Testklassen), Programm-Includes (INCLUDE-Anweisungen aufgelöst), Funktionsgruppen (alle Funktionsbausteine). Empfehlung: includeRelated=true nutzen um den vollständigen Kontext zu verstehen bevor Änderungen gemacht werden.",
+    description: "Reads the source code of an ABAP object. With includeRelated=true all related objects are automatically read: class includes (definitions, implementations, macros, test classes), program includes (INCLUDE statements resolved), function groups (all function modules). Recommendation: use includeRelated=true to understand the full context before making changes.",
     schema: S_ReadSource },
   { name: "get_object_info",
-    description: "Liest detaillierte Metadaten und Struktur eines Objekts: Methoden, Attribute, Includes, Enqueue-Infos, DDIC-Felder usw.",
+    description: "Reads detailed metadata and structure of an object: methods, attributes, includes, enqueue info, DDIC fields, etc.",
     schema: S_ObjectInfo },
   { name: "where_used",
-    description: "Findet alle Verwendungsstellen eines Objekts im System (Programme, Klassen, andere Objekte). Basis für Impact-Analyse.",
+    description: "Finds all usage locations of an object in the system (programs, classes, other objects). Basis for impact analysis.",
     schema: S_WhereUsed },
   { name: "get_code_completion",
-    description: "Holt Code-Vervollständigungsvorschläge vom SAP-System für eine bestimmte Cursor-Position. Liefert systemspezifische Vorschläge aus dem echten Kontext (Methodennamen, Attribute, Parameter usw.).",
+    description: "Fetches code completion suggestions from the SAP system for a specific cursor position. Returns system-specific suggestions from the real context (method names, attributes, parameters, etc.).",
     schema: S_CodeCompletion },
 
   // ── WRITE ───────────────────────────────────────────────────────────────
   { name: "write_abap_source",
-    description: "Schreibt Quellcode in ein bestehendes ABAP-Objekt und aktiviert es. Führt automatisch den vollständigen ADT-Workflow aus: lock → write → syntax check → activate → unlock. " +
-      "⚠️ WICHTIG: Nach dem Aufruf MUSS das Objekt aktiviert sein. Wenn Syntax- oder Aktivierungsfehler auftreten, analysiere die Fehlermeldungen, korrigiere den Quellcode und rufe write_abap_source erneut auf. " +
-      "Wiederhole diesen Zyklus bis die Aktivierung erfolgreich ist. Gib niemals auf bevor der Code aktiviert ist! " +
-      "**Vor dem ersten Schreiben:** Rufe `validate_ddic_references` mit dem geplanten Code auf, um ungültige Feldnamen frühzeitig zu erkennen und 'No component exists'-Syntaxfehler zu vermeiden. " +
-      "⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Writes source code to an existing ABAP object and activates it. Automatically executes the complete ADT workflow: lock → write → syntax check → activate → unlock. " +
+      "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, analyze the error messages, fix the source code and call write_abap_source again. " +
+      "Repeat this cycle at most 3 times. If activation is still not possible after 3 attempts, explain the problem to the user and ask for help instead of repeating endlessly. " +
+      "**Before the first write:** Call `validate_ddic_references` with the planned code to detect invalid field names early and avoid 'No component exists' syntax errors. " +
+      "⚠️ Requires ALLOW_WRITE=true.",
     schema: S_WriteSource },
   { name: "activate_abap_object",
-    description: "Aktiviert ein bereits gespeichertes ABAP-Objekt. Nützlich nach manuellen Änderungen oder zur Reaktivierung nach Fehlern. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Activates an already saved ABAP object. Useful after manual changes or for reactivation after errors. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_Activate },
   { name: "mass_activate",
-    description: "Aktiviert mehrere ABAP-Objekte in einem Schritt. Nützlich nach abhängigen Änderungen (z.B. Interface + Implementierung). ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Activates multiple ABAP objects in one step. Useful after dependent changes (e.g. interface + implementation). ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_MassActivate },
   { name: "pretty_print",
-    description: "Formatiert ABAP-Quellcode über den SAP Pretty Printer. Einrückung und Schlüsselwort-Schreibweise werden server-seitig konfiguriert (SE38 → Einstellungen). Liefert formatierten Code zurück ohne zu speichern.",
+    description: "Formats ABAP source code via the SAP Pretty Printer. Indentation and keyword capitalization are configured server-side (SE38 → Settings). Returns formatted code without saving.",
     schema: S_PrettyPrint },
 
   // ── CREATE ──────────────────────────────────────────────────────────────
   { name: "create_abap_program",
-    description: "Legt ein neues ABAP-Programm an. programType='P' für Report (Default), programType='I' für Include. Name muss mit Z oder Y beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new ABAP program. programType='P' for report (default), programType='I' for include. Name must start with Z or Y. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateProgram },
   { name: "create_abap_class",
-    description: "Legt eine neue ABAP-Klasse an. Name muss mit ZCL_ oder YCL_ beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new ABAP class. Name must start with ZCL_ or YCL_. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateClass },
   { name: "create_abap_interface",
-    description: "Legt ein neues ABAP-Interface an. Name muss mit ZIF_ oder YIF_ beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new ABAP interface. Name must start with ZIF_ or YIF_. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateInterface },
   { name: "create_function_group",
-    description: "Legt eine neue Funktionsgruppe an. Name muss mit Z oder Y beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new function group. Name must start with Z or Y. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateFunctionGroup },
   { name: "create_cds_view",
-    description: "Legt eine neue CDS-View (DDLS) an. Name muss mit Z oder Y beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new CDS view (DDLS). Name must start with Z or Y. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateCdsView },
   { name: "create_database_table",
-    description: "Legt eine neue transparente Datenbanktabelle (TABL) an. Name muss mit Z oder Y beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new transparent database table (TABL). Name must start with Z or Y. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateTable },
   { name: "create_message_class",
-    description: "Legt eine neue Nachrichtenklasse (MSAG) an. Name muss mit Z oder Y beginnen. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new message class (MSAG). Name must start with Z or Y. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateMessageClass },
 
   // ── DELETE ──────────────────────────────────────────────────────────────
   { name: "delete_abap_object",
-    description: "Löscht ein ABAP-Objekt dauerhaft. ⛔ NICHT RÜCKGÄNGIG MACHBAR. Erfordert ALLOW_DELETE=true und ALLOW_WRITE=true.",
+    description: "Permanently deletes an ABAP object. ⛔ CANNOT BE UNDONE. Requires ALLOW_DELETE=true and ALLOW_WRITE=true.",
     schema: S_DeleteObject },
 
   // ── TEST ────────────────────────────────────────────────────────────────
   { name: "run_unit_tests",
-    description: "Führt ABAP Unit Tests für eine Klasse oder ein Programm aus. Liefert Test-Ergebnisse mit Pass/Fail-Status und Fehlermeldungen.",
+    description: "Runs ABAP Unit Tests for a class or program. Returns test results with pass/fail status and error messages.",
     schema: S_RunTests },
   { name: "create_test_include",
-    description: "Erstellt ein Test-Include (CCAU) für eine vorhandene Klasse. Generiert die Grundstruktur für ABAP Unit Tests. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a test include (CCAU) for an existing class. Generates the basic structure for ABAP Unit Tests. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateTestInclude },
 
   // ── QUALITY ─────────────────────────────────────────────────────────────
   { name: "run_syntax_check",
-    description: "Führt einen ABAP-Syntaxcheck durch ohne zu speichern. Gibt Fehler und Warnungen mit Zeilennummern zurück.",
+    description: "Runs an ABAP syntax check without saving. Returns errors and warnings with line numbers.",
     schema: S_SyntaxCheck },
   { name: "run_atc_check",
-    description: "Startet eine ATC-Prüfung (ABAP Test Cockpit) für ein Objekt. Liefert Code-Qualitätsfunde mit Priorität, Kategorie und Beschreibung.",
+    description: "Starts an ATC check (ABAP Test Cockpit) for an object. Returns code quality findings with priority, category and description.",
     schema: S_RunAtc },
   { name: "validate_ddic_references",
     description:
-      "Analysiert ABAP-Quellcode statisch und prüft alle referenzierten Tabellenfelder gegen die DDIC-Metadaten. " +
-      "Gibt eine Liste ungültiger Feldnamen zurück. " +
-      "⚡ Empfohlen vor write_abap_source aufzurufen um 'Field unknown'-Syntaxfehler zu vermeiden. " +
-      "Erkennt: (1) TYPE/LIKE tab-field, (2) table~field (New SQL), (3) SELECT-Feldliste FROM table, (4) WHERE-Klausel-Felder.",
+      "Statically analyzes ABAP source code and checks all referenced table fields against DDIC metadata. " +
+      "Returns a list of invalid field names. " +
+      "⚡ Recommended to call before write_abap_source to avoid 'Field unknown' syntax errors. " +
+      "Detects: (1) TYPE/LIKE tab-field, (2) table~field (New SQL), (3) SELECT field list FROM table, (4) WHERE clause fields.",
     schema: S_ValidateDdic },
 
   // ── DIAGNOSTICS ─────────────────────────────────────────────────────────
   { name: "get_short_dumps",
-    description: "Liest die Liste der neuesten Short Dumps (Runtime Errors) aus dem System. Entspricht Transaktion ST22.",
+    description: "Reads the list of the latest short dumps (runtime errors) from the system. Corresponds to transaction ST22.",
     schema: S_GetDumps },
   { name: "get_short_dump_detail",
-    description: "Liest Details eines spezifischen Short Dumps: Fehlertext, Call Stack, lokale Variablen, Quellcode-Position.",
+    description: "Reads details of a specific short dump: error text, call stack, local variables, source code position.",
     schema: S_GetDumpDetail },
   { name: "get_traces",
-    description: "Liest die Liste der Performance Traces (SQL-Trace, ABAP-Trace). Entspricht Transaktion SAT.",
+    description: "Reads the list of performance traces (SQL trace, ABAP trace). Corresponds to transaction SAT.",
     schema: S_GetTraces },
   { name: "get_trace_detail",
-    description: "Liest Details eines spezifischen Performance Traces: Laufzeit, Hit-Count, teuerste Statements.",
+    description: "Reads details of a specific performance trace: runtime, hit count, most expensive statements.",
     schema: S_GetTraceDetail },
 
   // ── TRANSPORT ───────────────────────────────────────────────────────────
   { name: "get_transport_info",
-    description: "Gibt verfügbare Transportaufträge für ein Objekt und sein Paket zurück.",
+    description: "Returns available transport requests for an object and its package.",
     schema: S_TransportInfo },
   { name: "get_transport_objects",
-    description: "Listet alle Objekte in einem Transportauftrag auf. Zeigt was ein Transport beinhaltet.",
+    description: "Lists all objects in a transport request. Shows what a transport contains.",
     schema: S_TransportObjects },
 
   // ── ABAPGIT ─────────────────────────────────────────────────────────────
   { name: "get_abapgit_repos",
-    description: "Listet alle abapGit-Repositories auf die im System konfiguriert sind.",
+    description: "Lists all abapGit repositories configured in the system.",
     schema: S_GitRepos },
   { name: "abapgit_pull",
-    description: "Führt einen abapGit Pull für ein Repository durch (importiert Code aus Git). ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Performs an abapGit pull for a repository (imports code from Git). ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_GitPull },
 
   // ── QUERY ───────────────────────────────────────────────────────────────
   { name: "run_select_query",
-    description: "Führt ein SELECT-Statement direkt gegen SAP-Tabellen aus. Gibt Ergebnis-Rows als JSON zurück. Nur lesende Zugriffe erlaubt.",
+    description: "Executes a SELECT statement directly against SAP tables. Returns result rows as JSON. Only read-only access is allowed.",
     schema: S_Query },
   { name: "execute_abap_snippet",
     description:
-      "Führt einen temporären ABAP-Code-Schnipsel live im SAP-System aus und gibt die Ausgabe zurück. " +
-      "Das Programm wird in $TMP angelegt, sofort ausgeführt und danach automatisch gelöscht — kein permanenter Zustand. " +
-      "Ideal für: Tabellenwerte prüfen, Berechnungen testen, API-Rückgaben inspizieren, Debugging-Hypothesen validieren. " +
-      "⚠️ Erfordert ALLOW_WRITE=true. " +
-      "⚠️ Nur lesende Logik verwenden — COMMIT WORK, BAPI-Aufrufe und schreibende DB-Operationen sind verboten. " +
-      "Das Tool prüft den Code statisch auf verbotene Anweisungen bevor es ihn ausführt.",
+      "Executes a temporary ABAP code snippet live in the SAP system and returns the output. " +
+      "The program is created in $TMP, executed immediately and then automatically deleted — no permanent state. " +
+      "Ideal for: checking table values, testing calculations, inspecting API return values, validating debugging hypotheses. " +
+      "⚠️ Requires ALLOW_WRITE=true. " +
+      "⚠️ Use read-only logic only — COMMIT WORK, BAPI calls and write DB operations are forbidden. " +
+      "The tool statically checks the code for forbidden statements before executing it.",
     schema: S_ExecuteSnippet },
 
   // ── NEW TOOLS ─────────────────────────────────────────────────────────────
   { name: "find_definition",
-    description: "Springt zur Definition eines Tokens (Variable, Methode, Klasse usw.) im Quellcode. Liefert URI, Zeile und Spalte der Definition.",
+    description: "Navigates to the definition of a token (variable, method, class, etc.) in source code. Returns URI, line and column of the definition.",
     schema: S_FindDefinition },
   { name: "get_revisions",
-    description: "Liest die Versionshistorie eines ABAP-Objekts. Liefert alle gespeicherten Revisionen mit Datum, Autor und Transportauftrag.",
+    description: "Reads the version history of an ABAP object. Returns all saved revisions with date, author and transport request.",
     schema: S_GetRevisions },
   { name: "create_transport",
-    description: "Legt einen neuen Transportauftrag an. Liefert die Transport-Nummer zurück. ⚠️ Erfordert ALLOW_WRITE=true.",
+    description: "Creates a new transport request. Returns the transport number. ⚠️ Requires ALLOW_WRITE=true.",
     schema: S_CreateTransport },
   { name: "get_fix_proposals",
-    description: "Holt Quick-Fix-Vorschläge für eine bestimmte Position im Quellcode (z.B. fehlende Methode implementieren, Variable deklarieren).",
+    description: "Fetches quick-fix proposals for a specific position in source code (e.g. implement missing method, declare variable).",
     schema: S_FixProposals },
   { name: "get_ddic_element",
-    description: "Liest detaillierte DDIC-Informationen zu einer Tabelle, View, Datenelement oder Domäne. Liefert Felder, Typen, Annotationen und Assoziationen.",
+    description: "Reads detailed DDIC information for a table, view, data element or domain. Returns fields, types, annotations and associations.",
     schema: S_GetDdicElement },
   { name: "get_inactive_objects",
-    description: "Listet alle inaktiven (nicht-aktivierten) Objekte des aktuellen Users auf.",
+    description: "Lists all inactive (not yet activated) objects of the current user.",
     schema: S_GetInactiveObjects },
   { name: "get_table_contents",
-    description: "Liest Tabelleninhalte direkt aus einer DDIC-Tabelle. Gibt Daten als JSON zurück.",
+    description: "Reads table contents directly from a DDIC table. Returns data as JSON.",
     schema: S_GetTableContents },
 
   // ── CONTEXT ANALYSIS ──────────────────────────────────────────────────
   { name: "analyze_abap_context",
-    description: "Analysiert den vollständigen Kontext eines ABAP-Objekts: Liest Quellcode inkl. aller Includes, erkennt referenzierte Funktionsbausteine, Klassen und Interfaces per Regex, ruft deren Metadaten ab und liefert einen strukturierten Kontext-Report. Einstiegspunkt für den abap_develop Workflow.",
+    description: "Analyzes the complete context of an ABAP object: reads source code including all includes, detects referenced function modules, classes and interfaces via regex, retrieves their metadata and returns a structured context report. Entry point for the abap_develop workflow.",
     schema: S_AnalyzeContext },
 
   // ── DOCUMENTATION ─────────────────────────────────────────────────────
   { name: "get_abap_keyword_doc",
-    description: "Ruft ABAP-Keyword-Dokumentation von help.sap.com ab (z.B. SELECT, LOOP, READ TABLE). Liefert die offizielle SAP-Doku als formatierten Text.",
+    description: "Fetches ABAP keyword documentation from help.sap.com (e.g. SELECT, LOOP, READ TABLE). Returns the official SAP documentation as formatted text.",
     schema: S_GetAbapKeywordDoc },
   { name: "get_abap_class_doc",
-    description: "Ruft ABAP-Klassen/Interface-Dokumentation von help.sap.com ab (z.B. CL_SALV_TABLE, IF_AMDP_MARKER_HDB). Liefert die offizielle SAP-Doku als formatierten Text.",
+    description: "Fetches ABAP class/interface documentation from help.sap.com (e.g. CL_SALV_TABLE, IF_AMDP_MARKER_HDB). Returns the official SAP documentation as formatted text.",
     schema: S_GetAbapClassDoc },
   { name: "get_module_best_practices",
-    description: "Liefert modulspezifische SAP ABAP Best Practices (wichtige Tabellen, empfohlene BAPIs/Klassen, Coding-Richtlinien, häufige Fehler, S/4HANA-Migrationshinweise). Module: FI, CO, MM, SD, PP, PM, QM, HR, HCM, PS, WM, EWM, BASIS, BC, ABAP.",
+    description: "Returns module-specific SAP ABAP best practices (important tables, recommended BAPIs/classes, coding guidelines, common errors, S/4HANA migration hints). Modules: FI, CO, MM, SD, PP, PM, QM, HR, HCM, PS, WM, EWM, BASIS, BC, ABAP.",
     schema: S_GetModuleBestPractices },
   { name: "search_clean_abap",
-    description: "Durchsucht den offiziellen SAP Clean ABAP Styleguide (github.com/SAP/styleguides) nach Best Practices, Namenskonventionen, Coding-Richtlinien und Anti-Patterns. " +
-      "Gibt die relevantesten Abschnitte zurück. Vor dem Schreiben von neuem Code aufrufen um Clean ABAP Konventionen einzuhalten.",
+    description: "Searches the official SAP Clean ABAP Styleguide (github.com/SAP/styleguides) for best practices, naming conventions, coding guidelines and anti-patterns. " +
+      "Returns the most relevant sections. Call before writing new code to comply with Clean ABAP conventions.",
     schema: S_SearchCleanAbap },
   { name: "search_abap_syntax",
-    description: "Sucht die offizielle ABAP-Syntaxdokumentation von help.sap.com anhand einer Freitext-Anfrage (z.B. 'SELECT UP TO ROWS', 'LOOP AT clause order'). " +
-      "Erkennt das Haupt-Keyword automatisch, lädt die Dokumentationsseite und gibt den relevanten Syntaxabschnitt zurück. " +
-      "VOR dem Schreiben von ABAP-Code aufrufen um korrekte Syntax sicherzustellen.",
+    description: "Searches the official ABAP syntax documentation from help.sap.com based on a free-text query (e.g. 'SELECT UP TO ROWS', 'LOOP AT clause order'). " +
+      "Automatically identifies the main keyword, loads the documentation page and returns the relevant syntax section. " +
+      "Call BEFORE writing ABAP code to ensure correct syntax.",
     schema: S_SearchAbapSyntax },
 ];
 
@@ -1581,18 +1596,18 @@ const CORE_TOOL_NAMES = new Set([
 const enabledTools = new Set<string>();
 
 const S_FindTools = z.object({
-  query: z.string().optional().describe("Suchmuster fuer Tool-Namen/Beschreibungen"),
+  query: z.string().optional().describe("Search pattern for tool names/descriptions"),
   category: z.string().optional().describe(
-    "Kategorie: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION"
+    "Category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION"
   ),
-  enable: z.boolean().optional().default(true).describe("Tools aktivieren (default: true)"),
+  enable: z.boolean().optional().default(true).describe("Enable tools (default: true)"),
 });
 
 const FIND_TOOLS_ENTRY = {
   name: "find_tools",
-  description: "Findet und aktiviert ABAP-Tools nach Suchbegriff oder Kategorie. " +
-    "Kategorien: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION. " +
-    "Aktivierte Tools werden sofort verfuegbar.",
+  description: "Finds and enables ABAP tools by search term or category. " +
+    "Categories: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION. " +
+    "Enabled tools become immediately available.",
   schema: S_FindTools,
 };
 
@@ -1626,10 +1641,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(ListPromptsRequestSchema, async () => ({
   prompts: [{
     name: "abap_develop",
-    description: "Intelligenter ABAP-Entwicklungsworkflow: Analysiert zuerst den vollständigen Kontext, wendet moderne ABAP-Prinzipien an.",
+    description: "Intelligent ABAP development workflow: First analyzes the complete context, applies modern ABAP principles.",
     arguments: [
-      { name: "object_name", description: "Name des ABAP-Objekts (z.B. ZRYBAK_TEST)", required: true },
-      { name: "task", description: "Aufgabe (z.B. 'ALV-Grid mit CL_SALV_TABLE einbauen')", required: true },
+      { name: "object_name", description: "Name of the ABAP object (e.g. ZRYBAK_TEST)", required: true },
+      { name: "task", description: "Task (e.g. 'Add ALV grid with CL_SALV_TABLE')", required: true },
     ],
   }],
 }));
@@ -1638,7 +1653,7 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => ({
 server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   const { name, arguments: promptArgs } = request.params;
   if (name !== "abap_develop")
-    throw new McpError(ErrorCode.InvalidRequest, `Unbekannter Prompt: ${name}`);
+    throw new McpError(ErrorCode.InvalidRequest, `Unknown prompt: ${name}`);
 
   const objectName = promptArgs?.object_name ?? "";
   const task = promptArgs?.task ?? "";
@@ -1649,67 +1664,67 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       content: {
         type: "text",
         text:
-`Du bist ein erfahrener SAP ABAP-Entwickler. Deine Aufgabe: "${task}" am Objekt "${objectName}".
+`You are an experienced SAP ABAP developer. Your task: "${task}" on object "${objectName}".
 
-## PFLICHT-WORKFLOW (Reihenfolge einhalten!)
+## MANDATORY WORKFLOW (follow the order!)
 
-### Schritt 1: Vollständigen Kontext erfassen
-1. Führe \`search_abap_objects(query="${objectName}")\` aus, um die ADT-URL zu ermitteln.
-2. Führe \`analyze_abap_context(objectUrl=<url>, depth="deep")\` aus.
-3. Lies den Kontext-Report VOLLSTÄNDIG bevor du mit Schritt 2 weitermachst.
-   ⚠️ NIEMALS Code schreiben ohne vorher ALLE Includes und referenzierten Objekte gelesen zu haben!
+### Step 1: Gather the complete context
+1. Run \`search_abap_objects(query="${objectName}")\` to determine the ADT URL.
+2. Run \`analyze_abap_context(objectUrl=<url>, depth="deep")\`.
+3. Read the context report COMPLETELY before proceeding to step 2.
+   ⚠️ NEVER write code without having read ALL includes and referenced objects first!
 
-### Schritt 2: Referenzen & Alternativen recherchieren
-- Für jeden im Kontext gefundenen Funktionsbaustein: Prüfe ob es modernere Alternativen gibt.
-  Beispiele veralteter Patterns → moderne Alternativen:
+### Step 2: Research references & alternatives
+- For each function module found in the context: check whether modern alternatives exist.
+  Examples of outdated patterns → modern alternatives:
     • REUSE_ALV_GRID_DISPLAY → CL_SALV_TABLE / CL_GUI_ALV_GRID
-    • POPUP_TO_CONFIRM → IF_FPM_POPUP (bei FPM) oder eigene Klasse
-    • READ TABLE ... SY-SUBRC → Inline-Deklaration: READ TABLE ... INTO DATA(ls_row)
-    • CALL FUNCTION (ohne Ausnahmen) → TRY/CATCH mit CX_* Klassen
-    • WRITE / FORMAT → CL_SALV_TABLE oder Web Dynpro / Fiori
-- Nutze \`search_abap_objects\` und \`where_used\` um Alternativen im System zu finden.
-- Bei Unsicherheit: Suche in der SAP-Dokumentation (Web-Suche) nach Best Practices.
+    • POPUP_TO_CONFIRM → IF_FPM_POPUP (for FPM) or custom class
+    • READ TABLE ... SY-SUBRC → inline declaration: READ TABLE ... INTO DATA(ls_row)
+    • CALL FUNCTION (without exceptions) → TRY/CATCH with CX_* classes
+    • WRITE / FORMAT → CL_SALV_TABLE or Web Dynpro / Fiori
+- Use \`search_abap_objects\` and \`where_used\` to find alternatives in the system.
+- When uncertain: search the SAP documentation (web search) for best practices.
 
-### Schritt 3: Moderne ABAP-Prinzipien anwenden (Clean ABAP)
-Beim Coding folgende Prinzipien beachten:
-- **Inline-Deklarationen**: DATA(lv_var), FIELD-SYMBOL(<fs>), NEW #(), VALUE #()
-- **String Templates**: |Text { lv_var } mehr Text| statt CONCATENATE
-- **Funktionale Methoden**: COND #(), SWITCH #(), REDUCE #(), FILTER #()
-- **ABAP SQL**: SELECT ... INTO TABLE @DATA(lt_result) (Host-Variablen mit @)
-- **Ausnahmen**: CX_*-Klassen und TRY/CATCH statt SY-SUBRC-Prüfung
-- **OOP**: Klassen/Interfaces statt Funktionsbausteine für neue Logik
-- **Naming**: Clean ABAP Konventionen (keine ungarische Notation für neue Objekte,
-  aber bestehende Konventionen im Programm respektieren)
-- **Vermeidung**: MOVE, COMPUTE, obsolete Anweisungen (CHECK in Methoden → RETURN)
-- **Test-Freundlichkeit**: Abhängigkeiten über Interfaces injizieren
+### Step 3: Apply modern ABAP principles (Clean ABAP)
+Follow these principles when coding:
+- **Inline declarations**: DATA(lv_var), FIELD-SYMBOL(<fs>), NEW #(), VALUE #()
+- **String templates**: |Text { lv_var } more text| instead of CONCATENATE
+- **Functional methods**: COND #(), SWITCH #(), REDUCE #(), FILTER #()
+- **ABAP SQL**: SELECT ... INTO TABLE @DATA(lt_result) (host variables with @)
+- **Exceptions**: CX_* classes and TRY/CATCH instead of SY-SUBRC checks
+- **OOP**: Classes/interfaces instead of function modules for new logic
+- **Naming**: Clean ABAP conventions (no Hungarian notation for new objects,
+  but respect existing conventions in the program)
+- **Avoid**: MOVE, COMPUTE, obsolete statements (CHECK in methods → RETURN)
+- **Testability**: Inject dependencies via interfaces
 
-### Schritt 4: Code-Platzierung bestimmen
-- Prüfe den Kontext-Report: In welchem Include/Klasse gehört der neue Code hin?
-- Bei Reports mit Includes: NIEMALS Code ins Hauptprogramm, wenn es ein passendes Include gibt!
-- Bei Klassen: Richtige Methode / richtiges Include wählen
-- Bei FuGr: Richtigen Funktionsbaustein identifizieren
+### Step 4: Determine code placement
+- Check the context report: which include/class should the new code go into?
+- For reports with includes: NEVER put code into the main program if a suitable include exists!
+- For classes: choose the correct method / correct include
+- For function groups: identify the correct function module
 
-### Schritt 4b: DDIC-Strukturen nachschlagen (PFLICHT bei DB-Tabellen)
-⚠️ **BEVOR du Code schreibst**, der Datenbankfelder verwendet:
-1. Identifiziere alle Tabellen/Strukturen, die du im Code referenzieren willst (z.B. VBAK, VBAP, KNA1, EKKO …).
-2. Rufe für **jede** dieser Tabellen \`get_object_info(objectUrl=<adt-url-der-tabelle>)\` auf — die ADT-URL ermittelst du via \`search_abap_objects(query=<tabellenname>, objectType="TABL")\`.
-3. Lies die zurückgegebenen Felder **vollständig** und merke dir die **exakten** Feldnamen.
-4. Verwende im Code **ausschließlich** Feldnamen, die du in Schritt 3 gesehen hast. NIEMALS Feldnamen erfinden oder raten!
+### Step 4b: Look up DDIC structures (MANDATORY for DB tables)
+⚠️ **BEFORE writing code** that uses database fields:
+1. Identify all tables/structures you want to reference in the code (e.g. VBAK, VBAP, KNA1, EKKO …).
+2. For **each** of these tables call \`get_object_info(objectUrl=<adt-url-of-table>)\` — determine the ADT URL via \`search_abap_objects(query=<tablename>, objectType="TABL")\`.
+3. Read the returned fields **completely** and remember the **exact** field names.
+4. Use **only** field names in the code that you saw in step 3. NEVER invent or guess field names!
 
-### Schritt 5: Implementierung
-⚠️ **PFLICHT vor dem ersten write_abap_source-Aufruf:**
-1. Für jedes ABAP-Statement das du verwenden willst (SELECT, LOOP AT, READ TABLE, …): Rufe \`search_abap_syntax(query=<statement>)\` auf um die korrekte Syntax von help.sap.com zu verifizieren.
-2. Schreibe den geplanten Code auf Basis der in Schritt 4b nachgeschlagenen echten Feldnamen und der in Schritt 5.1 verifizierten Syntax.
-3. Rufe \`validate_ddic_references(source=<geplanter_code>)\` auf — als finale Absicherung.
-3. Falls Fehler gemeldet werden: Korrigiere die Feldnamen anhand der Vorschläge. NIEMALS write_abap_source aufrufen, wenn validate_ddic_references Fehler meldet!
-4. Erst wenn validate_ddic_references ✅ meldet → \`write_abap_source\` aufrufen.
+### Step 5: Implementation
+⚠️ **MANDATORY before the first write_abap_source call:**
+1. For each ABAP statement you want to use (SELECT, LOOP AT, READ TABLE, …): call \`search_abap_syntax(query=<statement>)\` to verify the correct syntax from help.sap.com.
+2. Write the planned code based on the real field names looked up in step 4b and the syntax verified in step 5.1.
+3. Call \`validate_ddic_references(source=<planned_code>)\` — as final verification.
+3. If errors are reported: fix the field names based on the suggestions. NEVER call write_abap_source if validate_ddic_references reports errors!
+4. Only when validate_ddic_references reports ✅ → call \`write_abap_source\`.
 
-- Bei Syntax-/Aktivierungsfehlern: Analysiere, korrigiere, und versuche erneut
-- Führe nach der Implementierung \`run_syntax_check\` und ggf. \`run_unit_tests\` aus
+- For syntax/activation errors: analyze, fix, and retry
+- After implementation run \`run_syntax_check\` and optionally \`run_unit_tests\`
 
-### Schritt 6: Qualitätsprüfung
-- Führe \`run_atc_check\` aus um Code-Qualität sicherzustellen
-- Behebe gefundene Findings (Priorität 1 und 2)`,
+### Step 6: Quality check
+- Run \`run_atc_check\` to ensure code quality
+- Fix findings (priority 1 and 2)`,
       },
     }],
   };
@@ -1738,8 +1753,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           description: r["adtcore:description"],
         }));
         return ok(items.length === 0
-          ? `Keine Objekte gefunden für '${p.query}'`
-          : `${items.length} Objekte gefunden:\n\n${JSON.stringify(items, null, 2)}`);
+          ? `No objects found for '${p.query}'`
+          : `${items.length} object(s) found:\n\n${JSON.stringify(items, null, 2)}`);
       }
 
       // ── read_abap_source ────────────────────────────────────────────────
@@ -1859,7 +1874,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             }
           }
         } catch (e: any) {
-          sections.push(`\n⚠️ Hinweis: Einige zugehörige Objekte konnten nicht gelesen werden: ${e?.message ?? e}`);
+          sections.push(`\n⚠️ Note: Some related objects could not be read: ${e?.message ?? e}`);
         }
 
         return ok(sections.join("\n\n"));
@@ -1879,8 +1894,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const res = await client.statelessClone.usageReferences(p.objectUrl);
         const items = (Array.isArray(res) ? res : []).slice(0, p.maxResults ?? 50);
         return ok(items.length === 0
-          ? "Keine Verwendungen gefunden."
-          : `${items.length} Verwendungen:\n\n${JSON.stringify(items, null, 2)}`);
+          ? "No usages found."
+          : `${items.length} usage(s):\n\n${JSON.stringify(items, null, 2)}`);
       }
 
       // ── get_code_completion ─────────────────────────────────────────────
@@ -1891,8 +1906,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         );
         const items = Array.isArray(res) ? res : [];
         return ok(items.length === 0
-          ? "Keine Vorschläge gefunden."
-          : `${items.length} Vorschläge:\n\n${JSON.stringify(items, null, 2)}`);
+          ? "No suggestions found."
+          : `${items.length} suggestion(s):\n\n${JSON.stringify(items, null, 2)}`);
       }
 
       // ── write_abap_source ───────────────────────────────────────────────
@@ -1918,11 +1933,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           p.mainProgram,
           reportProgress,
         );
-        const body = r.log.join("\n") + (r.syntaxErrors ? "\n\nSyntaxfehler:\n" + r.syntaxErrors.join("\n") : "");
+        const body = r.log.join("\n") + (r.syntaxErrors ? "\n\nSyntax errors:\n" + r.syntaxErrors.join("\n") : "");
         if (r.success) {
-          return ok(`✅ Erfolgreich geschrieben und aktiviert\n\n${body}`);
+          return ok(`✅ Successfully written and activated\n\n${body}`);
         }
-        return err(`❌ Fehler — Code NICHT aktiviert!\n\n${body}\n\n⚠️ AKTION ERFORDERLICH: Analysiere die obigen Fehler, korrigiere den ABAP-Quellcode und rufe write_abap_source erneut auf. Wiederhole bis die Aktivierung erfolgreich ist.`);
+        return err(`❌ Error — code NOT activated!\n\n${body}\n\n⚠️ ACTION REQUIRED: Analyze the errors above, fix the ABAP source code and call write_abap_source again. Repeat until activation succeeds.`);
       }
 
       // ── activate_abap_object ────────────────────────────────────────────
@@ -1932,11 +1947,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const activationResult = await client.activate(p.objectName, p.objectUrl);
         if (!activationResult.success) {
           const msgs = formatActivationMessages(activationResult.messages);
-          return err(`❌ Aktivierung von '${p.objectName}' fehlgeschlagen\n${msgs.join("\n")}`);
+          return err(`❌ Activation of '${p.objectName}' failed\n${msgs.join("\n")}`);
         }
         const extra = activationResult.messages.length > 0
           ? `\n${formatActivationMessages(activationResult.messages).join("\n")}` : "";
-        return ok(`✅ '${p.objectName}' erfolgreich aktiviert${extra}`);
+        return ok(`✅ '${p.objectName}' successfully activated${extra}`);
       }
 
       // ── mass_activate ───────────────────────────────────────────────────
@@ -1944,7 +1959,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         assertWriteEnabled();
         const p = S_MassActivate.parse(args);
         if (p.objects.length > 50)
-          throw new McpError(ErrorCode.InvalidRequest, "Maximal 50 Objekte pro Mass-Activation.");
+          throw new McpError(ErrorCode.InvalidRequest, "Maximum 50 objects per mass activation.");
         // Activate each object individually to avoid batch-format issues
         const allMessages: ActivationResultMessage[] = [];
         let allSuccess = true;
@@ -1956,10 +1971,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const activationResult = { success: allSuccess, messages: allMessages };
         const msgs = formatActivationMessages(activationResult.messages);
         if (!activationResult.success) {
-          return err(`❌ Mass Activation fehlgeschlagen (${p.objects.length} Objekte)\n${msgs.join("\n")}`);
+          return err(`❌ Mass activation failed (${p.objects.length} objects)\n${msgs.join("\n")}`);
         }
-        const extra = msgs.length > 0 ? `\n\nHinweise:\n${msgs.join("\n")}` : "";
-        return ok(`✅ Mass Activation: ${p.objects.length} Objekte erfolgreich aktiviert${extra}`);
+        const extra = msgs.length > 0 ? `\n\nNotices:\n${msgs.join("\n")}` : "";
+        return ok(`✅ Mass activation: ${p.objects.length} object(s) successfully activated${extra}`);
       }
 
       // ── pretty_print ────────────────────────────────────────────────────
@@ -1979,8 +1994,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const progType = p.programType ?? "P";
         await client.createObject(`PROG/${progType}`, n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/programs/programs/${n.toLowerCase()}`;
-        const label = progType === "I" ? "Include" : "Programm";
-        return ok(`✅ ${label} '${n}' angelegt\nURI: ${url}\n\nNächste Schritte:\n  write_abap_source mit objectUrl='${url}'`);
+        const label = progType === "I" ? "Include" : "Program";
+        return ok(`✅ ${label} '${n}' created\nURI: ${url}\n\nNext steps:\n  write_abap_source with objectUrl='${url}'`);
       }
 
       // ── create_abap_class ───────────────────────────────────────────────
@@ -1992,7 +2007,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const n = p.name.toUpperCase();
         await client.createObject("CLAS/OC", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/oo/classes/${n.toLowerCase()}`;
-        return ok(`✅ Klasse '${n}' angelegt\nURI: ${url}\n\nNächste Schritte:\n  read_abap_source → write_abap_source`);
+        return ok(`✅ Class '${n}' created\nURI: ${url}\n\nNext steps:\n  read_abap_source → write_abap_source`);
       }
 
       // ── create_abap_interface ───────────────────────────────────────────
@@ -2004,7 +2019,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const n = p.name.toUpperCase();
         await client.createObject("INTF/OI", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/oo/interfaces/${n.toLowerCase()}`;
-        return ok(`✅ Interface '${n}' angelegt\nURI: ${url}`);
+        return ok(`✅ Interface '${n}' created\nURI: ${url}`);
       }
 
       // ── create_function_group ───────────────────────────────────────────
@@ -2016,7 +2031,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const n = p.name.toUpperCase();
         await client.createObject("FUGR/F", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/function/groups/${n.toLowerCase()}`;
-        return ok(`✅ Funktionsgruppe '${n}' angelegt\nURI: ${url}`);
+        return ok(`✅ Function group '${n}' created\nURI: ${url}`);
       }
 
       // ── create_cds_view ─────────────────────────────────────────────────
@@ -2028,7 +2043,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const n = p.name.toUpperCase();
         await client.createObject("DDLS/DF", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/ddic/ddl/sources/${n.toLowerCase()}`;
-        return ok(`✅ CDS View '${n}' angelegt\nURI: ${url}`);
+        return ok(`✅ CDS View '${n}' created\nURI: ${url}`);
       }
 
       // ── create_database_table ───────────────────────────────────────────
@@ -2040,7 +2055,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const n = p.name.toUpperCase();
         await client.createObject("TABL/DT", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
         const url = `/sap/bc/adt/ddic/tables/${n.toLowerCase()}`;
-        return ok(`✅ Tabelle '${n}' angelegt\nURI: ${url}`);
+        return ok(`✅ Table '${n}' created\nURI: ${url}`);
       }
 
       // ── create_message_class ────────────────────────────────────────────
@@ -2051,12 +2066,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         assertCustomerNamespace(p.name, ["Z", "Y"]);
         const n = p.name.toUpperCase();
         await client.createObject("MSAG/N", n, p.devClass, p.description, `/sap/bc/adt/packages/${encodeURIComponent(p.devClass)}`, undefined, p.transport || undefined);
-        return ok(`✅ Nachrichtenklasse '${n}' angelegt`);
+        return ok(`✅ Message class '${n}' created`);
       }
 
       // ── delete_abap_object ──────────────────────────────────────────────
       case "delete_abap_object": {
-        assertWriteEnabled("Löschen");
+        assertWriteEnabled("Delete");
         assertDeleteEnabled();
         const p = S_DeleteObject.parse(args);
         await withWriteLock(() => withStatefulSession(client, async () => {
@@ -2068,14 +2083,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             throw e;
           }
         }));
-        return ok(`✅ Objekt '${p.objectName}' gelöscht.\n⚠️  Diese Aktion ist nicht rückgängig machbar.`);
+        return ok(`✅ Object '${p.objectName}' deleted.\n⚠️  This action cannot be undone.`);
       }
 
       // ── run_unit_tests ──────────────────────────────────────────────────
       case "run_unit_tests": {
         const p = S_RunTests.parse(args);
         const results = await client.unitTestRun(p.objectUrl);
-        if (!results || results.length === 0) return ok("Keine Unit Test Ergebnisse — sind Tests vorhanden?");
+        if (!results || results.length === 0) return ok("No unit test results — are tests present?");
         let passed = 0, failed = 0;
         for (const cls of results) {
           for (const method of cls.testmethods ?? []) {
@@ -2083,7 +2098,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             else passed++;
           }
         }
-        const summary = `Unit Tests: ${passed} bestanden, ${failed} fehlgeschlagen`;
+        const summary = `Unit tests: ${passed} passed, ${failed} failed`;
         return (failed === 0 ? ok : err)(`${failed === 0 ? "✅" : "❌"} ${summary}\n\n${JSON.stringify(results, null, 2)}`);
       }
 
@@ -2101,7 +2116,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             throw e;
           }
         }));
-        return ok(`✅ Test-Include erstellt für ${p.classUrl}`);
+        return ok(`✅ Test include created for ${p.classUrl}`);
       }
 
       // ── run_syntax_check ────────────────────────────────────────────────
@@ -2113,8 +2128,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const errors   = msgs.filter((m: { severity: string }) => ["E", "A"].includes(m.severity));
         const warnings = msgs.filter((m: { severity: string }) => m.severity === "W");
         const summary  = errors.length === 0
-          ? `✅ Syntax OK${warnings.length > 0 ? ` (${warnings.length} Warnungen)` : ""}`
-          : `❌ ${errors.length} Fehler, ${warnings.length} Warnungen`;
+          ? `✅ Syntax OK${warnings.length > 0 ? ` (${warnings.length} warning(s))` : ""}`
+          : `❌ ${errors.length} error(s), ${warnings.length} warning(s)`;
         return (errors.length === 0 ? ok : err)(`${summary}\n\n${JSON.stringify(msgs, null, 2)}`);
       }
 
@@ -2125,8 +2140,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const runResult = await client.createAtcRun(variant, p.objectUrl);
         const worklist = await client.atcWorklists(runResult.id);
         const findings = worklist.objects ?? [];
-        if (findings.length === 0) return ok("Keine ATC-Befunde — Objekt ist sauber.");
-        const summary = `ATC: ${findings.length} Objekte mit Befunden`;
+        if (findings.length === 0) return ok("No ATC findings — object is clean.");
+        const summary = `ATC: ${findings.length} object(s) with findings`;
         return ok(`${summary}\n\n${JSON.stringify(worklist, null, 2)}`);
       }
 
@@ -2209,7 +2224,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         }
 
         if (tableFieldMap.size === 0) {
-          return ok("✅ Keine DDIC-Tabellen-Feldreferenzen gefunden. Kein Validierungsbedarf.");
+          return ok("✅ No DDIC table field references found. No validation needed.");
         }
 
         const tableNames = [...tableFieldMap.keys()];
@@ -2237,21 +2252,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                   k.includes(field) || field.includes(k) ||
                   (k.length > 3 && field.length > 3 && (k.startsWith(field.substring(0, 4)) || field.startsWith(k.substring(0, 4))))
                 ).slice(0, 5);
-                const hint = similar.length > 0 ? ` → Ähnliche Felder: ${similar.join(', ')}` : ` (Tabelle hat ${knownFields.size} Felder)`;
-                errors.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden${hint}`);
+                const hint = similar.length > 0 ? ` → Similar fields: ${similar.join(', ')}` : ` (table has ${knownFields.size} fields)`;
+                errors.push(`  ❌ ${tableName}-${field}: Field not found${hint}`);
               }
             }
 
-            results.push(`  ✅ ${tableName}: ${referencedFields.size} referenzierte Felder geprüft`);
+            results.push(`  ✅ ${tableName}: ${referencedFields.size} referenced field(s) checked`);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            // Nicht als Fehler werten wenn Tabelle nicht auflösbar (könnte ein Custom-Type-Alias sein)
-            results.push(`  ⚠️  ${tableName}: DDIC nicht auflösbar — ${msg.substring(0, 80)}`);
+            // Not treated as error if table is not resolvable (could be a custom type alias)
+            results.push(`  ⚠️  ${tableName}: DDIC not resolvable — ${msg.substring(0, 80)}`);
           }
         }));
 
         const summary = [
-          `🔍 DDIC-Feldvalidierung für ${tableNames.length} Tabellen/Strukturen:`,
+          `🔍 DDIC field validation for ${tableNames.length} table(s)/structure(s):`,
           ...results.sort(),
           "",
         ];
@@ -2259,17 +2274,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         if (errorCount > 0) {
           return err([
             ...summary,
-            `❌ ${errorCount} ungültige Feldreferenzen gefunden:`,
+            `❌ ${errorCount} invalid field reference(s) found:`,
             ...errors.sort(),
             "",
-            "⚠️ Diese Felder existieren nicht in der DDIC — korrigiere die Feldnamen bevor du write_abap_source aufrufst!",
-            "💡 Tipp: Nutze get_ddic_element mit dem Tabellennamen um alle verfügbaren Felder zu sehen.",
+            "⚠️ These fields do not exist in the DDIC — fix the field names before calling write_abap_source!",
+            "💡 Tip: Use get_ddic_element with the table name to see all available fields.",
           ].join("\n"));
         }
 
         return ok([
           ...summary,
-          `✅ Alle ${validCount} Feldreferenzen sind valide.`,
+          `✅ All ${validCount} field reference(s) are valid.`,
         ].join("\n"));
       }
 
@@ -2293,7 +2308,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           // Fallback: load all dumps and find the one
           const feed = await client.dumps();
           const dump = feed.dumps?.find(d => d.id === p.dumpId);
-          if (!dump) return err(`Dump '${p.dumpId}' nicht gefunden.`);
+          if (!dump) return err(`Dump '${p.dumpId}' not found.`);
           return ok(JSON.stringify(dump, null, 2));
         }
       }
@@ -2334,7 +2349,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           objects.push({ name: m[1], type: m[2], uri: m[3] });
         }
         return ok(objects.length > 0
-          ? `Transport '${p.transportId}': ${objects.length} Objekte\n\n${JSON.stringify(objects, null, 2)}`
+          ? `Transport '${p.transportId}': ${objects.length} object(s)\n\n${JSON.stringify(objects, null, 2)}`
           : `Transport '${p.transportId}':\n\n${xml}`);
       }
 
@@ -2343,16 +2358,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const res = await client.gitRepos();
         const repos = Array.isArray(res) ? res : (res ? [res] : []);
         return ok(repos.length === 0
-          ? "Keine abapGit-Repositories konfiguriert."
-          : `${repos.length} Repositories:\n\n${JSON.stringify(repos, null, 2)}`);
+          ? "No abapGit repositories configured."
+          : `${repos.length} repository/repositories:\n\n${JSON.stringify(repos, null, 2)}`);
       }
 
       // ── abapgit_pull ────────────────────────────────────────────────────
       case "abapgit_pull": {
-        assertWriteEnabled("abapGit Pull");
+        assertWriteEnabled("abapGit pull");
         const p = S_GitPull.parse(args);
         const res = await client.gitPullRepo(p.repoId, undefined, p.transport || undefined);
-        return ok(`✅ abapGit Pull ausgeführt\n${JSON.stringify(res, null, 2)}`);
+        return ok(`✅ abapGit pull executed\n${JSON.stringify(res, null, 2)}`);
       }
 
       // ── run_select_query ────────────────────────────────────────────────
@@ -2365,7 +2380,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           const sysInfo = await client.httpClient.request("/sap/bc/adt/core/discovery", { method: "GET" });
           const body = typeof sysInfo.body === "string" ? sysInfo.body : "";
           if (/systemType.*?[Pp]roduction/i.test(body) || /role.*?[Pp]roduction/i.test(body)) {
-            warning = "⚠️  WARNUNG: Dies scheint ein Produktivsystem zu sein! SELECT-Queries können Performance-Probleme verursachen.\n\n";
+            warning = "⚠️  WARNING: This appears to be a production system! SELECT queries can cause performance issues.\n\n";
           }
         } catch { /* best effort — skip warning if detection fails */ }
         return ok(`${warning}${JSON.stringify(res, null, 2)}`);
@@ -2386,8 +2401,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const p = S_GetRevisions.parse(args);
         const res = await client.revisions(p.objectUrl);
         return ok(res.length === 0
-          ? "Keine Revisionen gefunden."
-          : `${res.length} Revisionen:\n\n${JSON.stringify(res, null, 2)}`);
+          ? "No revisions found."
+          : `${res.length} revision(s):\n\n${JSON.stringify(res, null, 2)}`);
       }
 
       // ── create_transport ─────────────────────────────────────────────────
@@ -2397,15 +2412,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const transportNumber = await client.createTransport(
           p.objectUrl, p.description, p.devClass, p.transportLayer
         );
-        return ok(`✅ Transport '${transportNumber}' angelegt`);
+        return ok(`✅ Transport '${transportNumber}' created`);
       }
 
       // ── get_fix_proposals ────────────────────────────────────────────────
       case "get_fix_proposals": {
         const p = S_FixProposals.parse(args);
         const proposals = await client.fixProposals(p.objectUrl, p.source, p.line, p.column);
-        if (proposals.length === 0) return ok("Keine Fix-Vorschläge verfügbar.");
-        return ok(`${proposals.length} Fix-Vorschläge:\n\n${JSON.stringify(proposals, null, 2)}`);
+        if (proposals.length === 0) return ok("No fix proposals available.");
+        return ok(`${proposals.length} fix proposal(s):\n\n${JSON.stringify(proposals, null, 2)}`);
       }
 
       // ── get_ddic_element ─────────────────────────────────────────────────
@@ -2418,8 +2433,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       // ── get_inactive_objects ─────────────────────────────────────────────
       case "get_inactive_objects": {
         const res = await client.inactiveObjects();
-        if (res.length === 0) return ok("Keine inaktiven Objekte.");
-        return ok(`${res.length} inaktive Objekte:\n\n${JSON.stringify(res, null, 2)}`);
+        if (res.length === 0) return ok("No inactive objects.");
+        return ok(`${res.length} inactive object(s):\n\n${JSON.stringify(res, null, 2)}`);
       }
 
       // ── get_table_contents ───────────────────────────────────────────────
@@ -2431,10 +2446,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
       // ── execute_abap_snippet ────────────────────────────────────────────
       case "execute_abap_snippet": {
-        assertWriteEnabled("Code-Ausführung");
+        assertWriteEnabled("Code execution");
         if (!cfg.allowExecute)
           throw new McpError(ErrorCode.InvalidRequest,
-            "Code-Ausführung ist deaktiviert. ALLOW_EXECUTE=true in .env setzen (zusätzlich zu ALLOW_WRITE=true). ⚠️ Nur auf DEV-Systemen aktivieren!");
+            "Code execution is disabled. Set ALLOW_EXECUTE=true in .env (in addition to ALLOW_WRITE=true). ⚠️ Only enable on DEV systems!");
         const p = S_ExecuteSnippet.parse(args);
 
         // Statische Sicherheitsprüfung — verbotene Anweisungen blockieren
@@ -2451,9 +2466,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const forbidden = FORBIDDEN.find(r => r.test(p.source));
         if (forbidden) {
           return err(
-            `❌ Verbotene Anweisung erkannt (${forbidden.source.substring(0, 40)}...). ` +
-            "execute_abap_snippet erlaubt nur lesende Operationen. " +
-            "Für schreibende Operationen: write_abap_source verwenden."
+            `❌ Forbidden statement detected (${forbidden.source.substring(0, 40)}...). ` +
+            "execute_abap_snippet only allows read-only operations. " +
+            "For write operations: use write_abap_source."
           );
         }
 
@@ -2496,9 +2511,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
               .filter((m: any) => ["E", "A"].includes(m.severity));
             if (syntaxErrors.length > 0) {
               const msgs = syntaxErrors.map((e: any) =>
-                `  Zeile ${e.line ?? "?"}: ${e.text}`
+                `  Line ${e.line ?? "?"}: ${e.text}`
               );
-              return err(`❌ Syntaxfehler — Code nicht ausgeführt:\n${msgs.join("\n")}`);
+              return err(`❌ Syntax error(s) — code not executed:\n${msgs.join("\n")}`);
             }
 
             // 4. Aktivieren (muss aktiviert sein um ausführbar zu sein)
@@ -2520,7 +2535,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
               ? runResp.body
               : JSON.stringify(runResp.body, null, 2);
 
-            return ok(`✅ Ausführung erfolgreich\n\n${output || "(keine Ausgabe — WRITE-Anweisungen vorhanden?)"}`);
+            return ok(`✅ Execution successful\n\n${output || "(no output — WRITE statements present?)"}`);
 
           } finally {
             // 6. Temporäres Programm immer löschen — auch bei Fehler
@@ -2530,7 +2545,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                 await client.deleteObject(programUrl, delLock.LOCK_HANDLE, undefined);
               } catch (delErr) {
                 console.error(
-                  `⚠️ Temporäres Programm ${snippetName} konnte nicht gelöscht werden:`,
+                  `⚠️ Temporary program ${snippetName} could not be deleted:`,
                   delErr instanceof Error ? delErr.message : String(delErr)
                 );
               }
@@ -2556,13 +2571,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
         // Get object structure
         let structure: any = null;
-        let objectType = "Unbekannt";
+        let objectType = "Unknown";
         let objectPackage = "";
         let objectName = baseUrl.split("/").filter(Boolean).pop() ?? "";
 
         try {
           structure = await client.objectStructure(baseUrl);
-          objectType = (structure as any)?.["adtcore:type"] ?? (structure as any)?.objectStructure?.["adtcore:type"] ?? "Unbekannt";
+          objectType = (structure as any)?.["adtcore:type"] ?? (structure as any)?.objectStructure?.["adtcore:type"] ?? "Unknown";
           objectPackage = (structure as any)?.["adtcore:packageName"] ?? (structure as any)?.objectStructure?.["adtcore:packageName"] ?? "";
           objectName = (structure as any)?.["adtcore:name"] ?? (structure as any)?.objectStructure?.["adtcore:name"] ?? objectName;
         } catch { /* structure read failed — continue with source only */ }
@@ -2750,7 +2765,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                   return { name: fmName, info: `${desc} (${uri})` };
                 }
               } catch { /* ignore search failures */ }
-              return { name: fmName, info: "(keine Info verfügbar)" };
+              return { name: fmName, info: "(no info available)" };
             })
           );
           for (const r of fmInfoResults) {
@@ -2784,12 +2799,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                       }
                     };
                     extractMethods(Array.isArray(nodes) ? nodes : []);
-                    if (methods.length > 0) methodList = ` | Methoden: ${methods.join(", ")}`;
+                    if (methods.length > 0) methodList = ` | Methods: ${methods.join(", ")}`;
                   } catch { /* ignore structure read failures */ }
                   return { name: clsName, info: `${type} — ${desc}${methodList}` };
                 }
               } catch { /* ignore */ }
-              return { name: clsName, info: "(keine Info verfügbar)" };
+              return { name: clsName, info: "(no info available)" };
             })
           );
           for (const r of classInfoResults) {
@@ -2807,27 +2822,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             if (allSourceTexts[i].length <= charBudget) {
               charBudget -= allSourceTexts[i].length;
             } else {
-              allSourceTexts[i] = allSourceTexts[i].slice(0, charBudget) + "\n... (abgeschnitten)";
+              allSourceTexts[i] = allSourceTexts[i].slice(0, charBudget) + "\n... (truncated)";
               allSourceTexts.splice(i + 1);
               break;
             }
           }
-          sections.push(`\n⚠️ Quellcode auf ${MAX_ANALYZE_CHARS.toLocaleString()} Zeichen begrenzt (gesamt: ${combinedLength.toLocaleString()}). Nutze read_abap_source für spezifische Includes.`);
+          sections.push(`\n⚠️ Source code limited to ${MAX_ANALYZE_CHARS.toLocaleString()} characters (total: ${combinedLength.toLocaleString()}). Use read_abap_source for specific includes.`);
         }
 
         // 6. Build structured report
-        sections.push(`══ KONTEXT-ANALYSE: ${objectName.toUpperCase()} ══`);
+        sections.push(`══ CONTEXT ANALYSIS: ${objectName.toUpperCase()} ══`);
 
         // Program structure
-        sections.push(`\n📋 PROGRAMMSTRUKTUR`);
-        sections.push(`  Typ: ${objectType}`);
-        if (objectPackage) sections.push(`  Paket: ${objectPackage}`);
+        sections.push(`\n📋 PROGRAM STRUCTURE`);
+        sections.push(`  Type: ${objectType}`);
+        if (objectPackage) sections.push(`  Package: ${objectPackage}`);
         sections.push(`  Includes: ${includeCount}${includesList.length > 0 ? ` (${includesList.map(i => i.type).join(", ")})` : ""}`);
-        if (classMethods.length > 0) sections.push(`  Methoden: ${classMethods.join(", ")}`);
-        if (classAttributes.length > 0) sections.push(`  Attribute: ${classAttributes.join(", ")}`);
+        if (classMethods.length > 0) sections.push(`  Methods: ${classMethods.join(", ")}`);
+        if (classAttributes.length > 0) sections.push(`  Attributes: ${classAttributes.join(", ")}`);
 
         // Full source code
-        sections.push(`\n📄 QUELLCODE (Main + Includes)`);
+        sections.push(`\n📄 SOURCE CODE (Main + Includes)`);
         sections.push(`── MAIN (${baseUrl}) ──`);
         sections.push(mainText);
         for (const inc of includesList) {
@@ -2838,35 +2853,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         }
 
         // Referenced objects
-        sections.push(`\n🔗 REFERENZIERTE OBJEKTE`);
+        sections.push(`\n🔗 REFERENCED OBJECTS`);
         if (referencedFMs.size > 0) {
-          sections.push(`  Funktionsbausteine:`);
+          sections.push(`  Function modules:`);
           for (const fm of referencedFMs) {
             const info = fmInfos.find(f => f.name === fm);
             sections.push(`    - ${fm}${info ? ` (${info.info})` : ""}`);
           }
         }
         if (referencedClasses.size > 0) {
-          sections.push(`  Klassen/Interfaces:`);
+          sections.push(`  Classes/Interfaces:`);
           for (const cls of referencedClasses) {
             const info = classInfos.find(c => c.name === cls);
             sections.push(`    - ${cls}${info ? ` (${info.info})` : ""}`);
           }
         }
         if (staticCalls.size > 0) {
-          sections.push(`  Statische Aufrufe: ${Array.from(staticCalls).join(", ")}`);
+          sections.push(`  Static calls: ${Array.from(staticCalls).join(", ")}`);
         }
         if (referencedFMs.size === 0 && referencedClasses.size === 0) {
-          sections.push(`  (keine externen Referenzen erkannt)`);
+          sections.push(`  (no external references detected)`);
         }
 
         // Summary
-        sections.push(`\n⚡ ZUSAMMENFASSUNG`);
-        sections.push(`  - ${includeCount} Includes, ${referencedFMs.size} FMs, ${referencedClasses.size} Klassen/Interfaces referenziert`);
+        sections.push(`\n⚡ SUMMARY`);
+        sections.push(`  - ${includeCount} include(s), ${referencedFMs.size} FM(s), ${referencedClasses.size} class(es)/interface(s) referenced`);
         if (includesList.length > 0) {
           const mainInclude = includesList.find(i => i.source && i.source.length > mainText.length);
           if (mainInclude) {
-            sections.push(`  - Umfangreichster Code in: ${mainInclude.type} (${mainInclude.uri})`);
+            sections.push(`  - Largest code in: ${mainInclude.type} (${mainInclude.uri})`);
           }
         }
 
@@ -2887,7 +2902,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           }
         }
         if (!result.success) {
-          return err(`Dokumentation fuer '${p.keyword}' nicht gefunden (${result.content}).\nVersuchte URL: ${result.url}`);
+          return err(`Documentation for '${p.keyword}' not found (${result.content}).\nAttempted URL: ${result.url}`);
         }
         return ok(`${result.content}\n\n---\nQuelle: ${result.url}`);
       }
@@ -2897,8 +2912,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const p = S_SearchCleanAbap.parse(args);
         const files = await loadCleanAbapFiles();
         const source = files.size === 1 && fs.existsSync(CLEAN_ABAP_LOCAL_DIR)
-          ? "lokal"
-          : fs.existsSync(CLEAN_ABAP_LOCAL_DIR) ? "lokal" : "GitHub";
+          ? "local"
+          : fs.existsSync(CLEAN_ABAP_LOCAL_DIR) ? "local" : "GitHub";
 
         // Alle Dateien in Abschnitte zerlegen und gemeinsam durchsuchen
         const allSections: Array<{ heading: string; content: string; file: string }> = [];
@@ -2923,8 +2938,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         if (scored.length === 0) {
           const topics = [...new Set(allSections.map(s => s.heading))].slice(0, 20).join(", ");
           return err(
-            `Keine Treffer für '${p.query}' im Clean ABAP Guide (${files.size} Dateien durchsucht).\n` +
-            `Verfügbare Themen (Auswahl): ${topics}`
+            `No results for '${p.query}' in Clean ABAP Guide (${files.size} file(s) searched).\n` +
+            `Available topics (selection): ${topics}`
           );
         }
 
@@ -2933,7 +2948,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         ).join("\n\n---\n\n");
 
         return ok(
-          `# Clean ABAP Guide — "${p.query}" (Quelle: ${source}, ${files.size} Dateien)\n\n${output}\n\n` +
+          `# Clean ABAP Guide — "${p.query}" (source: ${source}, ${files.size} file(s))\n\n${output}\n\n` +
           `---\n📖 ${CLEAN_ABAP_LOCAL_DIR}`
         );
       }
@@ -3008,9 +3023,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
         if (!result || !result.success) {
           return err(
-            `Keine Dokumentation für '${query}' gefunden.\n` +
-            `Tipp: Versuche get_abap_keyword_doc mit dem exakten Keyword (z.B. "${keywordSlug.replace(/_/g, " ").toUpperCase()}").\n` +
-            `Versuchte URLs:\n${urlVariants.join("\n")}`
+            `No documentation found for '${query}'.\n` +
+            `Tip: Try get_abap_keyword_doc with the exact keyword (e.g. "${keywordSlug.replace(/_/g, " ").toUpperCase()}").\n` +
+            `Attempted URLs:\n${urlVariants.join("\n")}`
           );
         }
 
@@ -3051,7 +3066,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const url = buildClassUrl(p.className, version);
         const result = await fetchSapDocumentation(url);
         if (!result.success) {
-          return err(`Dokumentation fuer '${p.className}' nicht gefunden (${result.content}).\nVersuchte URL: ${result.url}`);
+          return err(`Documentation for '${p.className}' not found (${result.content}).\nAttempted URL: ${result.url}`);
         }
         return ok(`${result.content}\n\n---\nQuelle: ${result.url}`);
       }
@@ -3062,7 +3077,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const key = p.module.toUpperCase();
         const practices = MODULE_BEST_PRACTICES[key];
         if (!practices) {
-          return err(`Keine Best Practices fuer Modul '${p.module}' verfuegbar. Verfuegbare Module: ${Object.keys(MODULE_BEST_PRACTICES).join(", ")}`);
+          return err(`No best practices available for module '${p.module}'. Available modules: ${Object.keys(MODULE_BEST_PRACTICES).join(", ")}`);
         }
         return ok(practices);
       }
@@ -3076,7 +3091,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           const cat = p.category.toUpperCase();
           const toolNames = TOOL_CATEGORIES[cat];
           if (!toolNames) {
-            return err(`Unbekannte Kategorie '${p.category}'. Verfuegbar: ${Object.keys(TOOL_CATEGORIES).join(", ")}`);
+            return err(`Unknown category '${p.category}'. Available: ${Object.keys(TOOL_CATEGORIES).join(", ")}`);
           }
           matched = TOOLS.filter(t => toolNames.includes(t.name));
         } else if (p.query) {
@@ -3090,13 +3105,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
             `${cat} (${names.length}): ${names.join(", ")}`
           );
           return ok(
-            `Verfuegbare Kategorien:\n\n${lines.join("\n")}\n\n` +
-            `Aufruf: find_tools(category="KATEGORIE") oder find_tools(query="suchbegriff")`
+            `Available categories:\n\n${lines.join("\n")}\n\n` +
+            `Call: find_tools(category="CATEGORY") or find_tools(query="search term")`
           );
         }
 
         if (matched.length === 0) {
-          return ok("Keine passenden Tools gefunden.");
+          return ok("No matching tools found.");
         }
 
         // Enable/disable tools
@@ -3118,9 +3133,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         }
 
         const desc = matched.map(t => `• ${t.name}: ${t.description}`).join("\n");
-        const action = p.enable ? "aktiviert" : "deaktiviert";
+        const action = p.enable ? "enabled" : "disabled";
         return ok(
-          `${matched.length} Tool(s) gefunden${newlyEnabled > 0 ? `, ${newlyEnabled} ${action}` : ""}:\n\n${desc}`
+          `${matched.length} tool(s) found${newlyEnabled > 0 ? `, ${newlyEnabled} ${action}` : ""}:\n\n${desc}`
         );
       }
 
@@ -3132,27 +3147,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           const cat = Object.entries(TOOL_CATEGORIES).find(([, names]) => names.includes(name));
           throw new McpError(
             ErrorCode.MethodNotFound,
-            `Tool '${name}' ist verfuegbar aber noch nicht aktiviert. ` +
-            `Bitte zuerst aufrufen: find_tools(${cat ? `category="${cat[0]}"` : `query="${name}"`})`
+            `Tool '${name}' is available but not yet enabled. ` +
+            `Please call first: find_tools(${cat ? `category="${cat[0]}"` : `query="${name}"`})`
           );
         }
-        throw new McpError(ErrorCode.MethodNotFound, `Unbekanntes Tool: ${name}`);
+        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
       }
     }
   } catch (e) {
     if (e instanceof McpError) throw e;
     if (isAdtError(e)) {
       const parts: string[] = [e.message];
-      if (e.properties.conflictText) parts.push(`Konflikt: ${e.properties.conflictText}`);
-      if (e.properties.ideUser) parts.push(`Gesperrt von: ${e.properties.ideUser}`);
+      if (e.properties.conflictText) parts.push(`Conflict: ${e.properties.conflictText}`);
+      if (e.properties.ideUser) parts.push(`Locked by: ${e.properties.ideUser}`);
       const t100id = e.properties["T100KEY-ID"];
       const t100no = e.properties["T100KEY-NO"];
       if (t100id && t100no) parts.push(`T100: ${t100id}/${t100no}`);
-      throw new McpError(ErrorCode.InternalError, `ADT Fehler: ${parts.join(" | ")}`);
+      throw new McpError(ErrorCode.InternalError, `ADT error: ${parts.join(" | ")}`);
     }
     const msg = (e instanceof Error ? e.message : String(e))
       .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().substring(0, 600);
-    throw new McpError(ErrorCode.InternalError, `ADT Fehler: ${msg}`);
+    throw new McpError(ErrorCode.InternalError, `ADT error: ${msg}`);
   }
 });
 
