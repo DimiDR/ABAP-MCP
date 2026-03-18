@@ -295,12 +295,15 @@ const S_CodeCompletion = z.object({
 
 // --- WRITE ---
 const S_WriteSource = z.object({
-  objectUrl:        z.string().describe("ADT URL without /source/main suffix"),
-  source:           z.string().describe("Complete ABAP source code"),
-  transport:        z.string().optional().describe("Transport request, e.g. DEVK900123"),
+  objectUrl:          z.string().describe("ADT URL without /source/main suffix"),
+  source:             z.string().optional().describe("Complete ABAP source code (mutually exclusive with sourcePath)"),
+  sourcePath:         z.string().optional().describe("Path to a local file containing the ABAP source code — avoids token cost of passing large source inline"),
+  transport:          z.string().optional().describe("Transport request, e.g. DEVK900123"),
   activateAfterWrite: z.boolean().default(true).optional().describe("Activate after writing (default: true)"),
-  skipSyntaxCheck:  z.boolean().default(false).optional().describe("Skip syntax check (not recommended)"),
-  mainProgram:      z.string().optional().describe("Main program for syntax check of includes — name (e.g. ZRYBAK_AI_TEST) or ADT URL"),
+  skipSyntaxCheck:    z.boolean().default(false).optional().describe("Skip syntax check (not recommended)"),
+  mainProgram:        z.string().optional().describe("Main program for syntax check of includes — name (e.g. ZRYBAK_AI_TEST) or ADT URL"),
+}).refine(d => !!(d.source ?? d.sourcePath), {
+  message: "Either 'source' or 'sourcePath' must be provided",
 });
 const S_Activate = z.object({
   objectUrl:  z.string().describe("ADT URL of the object"),
@@ -1424,6 +1427,7 @@ const TOOLS: ToolDef[] = [
       "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, analyze the error messages, fix the source code and call write_abap_source again. " +
       "Repeat this cycle at most 3 times. If activation is still not possible after 3 attempts, explain the problem to the user and ask for help instead of repeating endlessly. " +
       "**Before the first write:** Call `validate_ddic_references` with the planned code to detect invalid field names early and avoid 'No component exists' syntax errors. " +
+      "Alternatively, pass 'sourcePath' with a local file path to avoid re-generating the source as inline JSON (recommended for large files). " +
       "⚠️ Requires ALLOW_WRITE=true.",
     schema: S_WriteSource },
   { name: "activate_abap_object",
@@ -1611,6 +1615,8 @@ const CORE_TOOL_NAMES = new Set([
   "get_object_info",
   "where_used",
   "analyze_abap_context",
+  "search_abap_syntax",       // mandatory in abap_develop Step 5.1
+  "validate_ddic_references", // mandatory in abap_develop Step 5.3
 ]);
 
 const enabledTools = new Set<string>();
@@ -1718,6 +1724,31 @@ Follow these principles when coding:
 - **Avoid**: MOVE, COMPUTE, obsolete statements (CHECK in methods → RETURN)
 - **Testability**: Inject dependencies via interfaces
 
+### Step 3b: ABAP Syntax Rules — MEMORIZE before writing code
+
+**SELECT / ABAP SQL:**
+- ✅ Modern (preferred): \`SELECT f1 f2 FROM ztab WHERE k = @lv_k INTO TABLE @DATA(lt) ORDER BY f1 DESCENDING.\`
+  ORDER BY, UP TO n ROWS, GROUP BY → only valid in this single-statement form.
+- Old loop style: \`SELECT f1 FROM ztab WHERE k = @lv_k INTO lv_v. ... ENDSELECT.\`
+  ⛔ ORDER BY is NOT allowed in SELECT...ENDSELECT loops — use SORT after the loop.
+  ⛔ Every SELECT...ENDSELECT loop MUST be closed with ENDSELECT before ENDMETHOD/ENDFORM.
+  ⛔ NEVER mix styles (no INTO TABLE inside a SELECT...ENDSELECT).
+
+**SORT:**
+- ✅ \`SORT lt_table BY field1 ASCENDING field2 DESCENDING.\`
+- ASCENDING/DESCENDING are **keywords**, not parameters.
+  ⛔ NEVER write \`SORT lt BY f DESCENDING = 'X'.\` — syntax error!
+
+**WRITE ... CURRENCY:**
+- ✅ \`WRITE lv_amount CURRENCY lv_waers TO lv_output.\` (lv_output must be CHAR/STRING)
+- CURRENCY is a formatting **keyword** here, not a field name.
+  ⛔ NEVER use CURRENCY as a variable name in a WRITE statement.
+
+**Type compatibility:**
+- Integer literals are type I by default.
+  ⛔ NEVER pass a raw integer literal to CURRENCY/AMOUNT typed formal parameters.
+- For string conversion use: \`lv_str = |{ lv_amount }|\` or \`WRITE lv_amount TO lv_str.\`
+
 ### Step 4: Determine code placement
 - Check the context report: which include/class should the new code go into?
 - For reports with includes: NEVER put code into the main program if a suitable include exists!
@@ -1733,11 +1764,15 @@ Follow these principles when coding:
 
 ### Step 5: Implementation
 ⚠️ **MANDATORY before the first write_abap_source call:**
-1. For each ABAP statement you want to use (SELECT, LOOP AT, READ TABLE, …): call \`search_abap_syntax(query=<statement>)\` to verify the correct syntax from help.sap.com.
-2. Write the planned code based on the real field names looked up in step 4b and the syntax verified in step 5.1.
-3. Call \`validate_ddic_references(source=<planned_code>)\` — as final verification.
-3. If errors are reported: fix the field names based on the suggestions. NEVER call write_abap_source if validate_ddic_references reports errors!
-4. Only when validate_ddic_references reports ✅ → call \`write_abap_source\`.
+0. Ensure validation tools are available: if \`search_abap_syntax\` or \`validate_ddic_references\`
+   are not in your tool list, call \`find_tools(category="DOCUMENTATION")\` and
+   \`find_tools(category="QUALITY")\` now.
+1. For each ABAP statement you want to use (SELECT, LOOP AT, SORT, WRITE, …): call
+   \`search_abap_syntax(query=<statement>)\`. Pay attention to the rules in Step 3b.
+2. Write the planned code based on verified field names (Step 4b) and syntax (Step 5.1).
+3. Call \`validate_ddic_references(source=<planned_code>)\` — final verification.
+4. If errors: fix field names. NEVER call \`write_abap_source\` if errors are reported!
+5. Only when \`validate_ddic_references\` reports ✅ → call \`write_abap_source\`.
 
 - For syntax/activation errors: analyze, fix, and retry
 - After implementation run \`run_syntax_check\` and optionally \`run_unit_tests\`
@@ -1934,6 +1969,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       case "write_abap_source": {
         assertWriteEnabled();
         const p = S_WriteSource.parse(args);
+        let source: string;
+        if (p.sourcePath) {
+          try {
+            source = fs.readFileSync(p.sourcePath, "utf-8");
+          } catch (e) {
+            throw new McpError(ErrorCode.InvalidRequest,
+              `Cannot read sourcePath '${p.sourcePath}': ${e instanceof Error ? e.message : String(e)}`);
+          }
+        } else {
+          source = p.source!;
+        }
         const progressToken = (extra as { _meta?: { progressToken?: string | number } })._meta?.progressToken;
         let step = 0;
         const totalSteps = 4;
@@ -1946,7 +1992,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           });
         }
         const r = await writeWorkflow(
-          client, p.objectUrl, p.source,
+          client, p.objectUrl, source,
           p.transport ?? cfg.defaultTransport,
           p.activateAfterWrite ?? true,
           p.skipSyntaxCheck ?? false,
