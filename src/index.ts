@@ -1517,6 +1517,7 @@ const TOOLS: ToolDef[] = [
       "Use inline 'source' only for very short snippets (< 20 lines).\n" +
       "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, fix the source and retry — at most 3 times. If still failing, explain to the user.\n" +
       "**Before the first write:** Call `validate_ddic_references` with the planned code to catch invalid field names early.\n" +
+      "**Comments:** Full-line comments with `*` MUST start in column 1 (no indentation). For indented comments use `\"` instead.\n" +
       "⚠️ Requires ALLOW_WRITE=true.",
     schema: S_WriteSource },
   { name: "activate_abap_object",
@@ -1845,6 +1846,13 @@ Follow these principles when coding:
 - ✅ \`WRITE lv_amount CURRENCY lv_waers TO lv_output.\` (lv_output must be CHAR/STRING)
 - CURRENCY is a formatting **keyword** here, not a field name.
   ⛔ NEVER use CURRENCY as a variable name in a WRITE statement.
+
+**Comments:**
+- Full-line comments use \`*\` in **column 1** (the very first character of the line).
+  ⛔ NEVER indent \`*\` — any whitespace before \`*\` is a syntax error!
+  ✅ \`* This is a comment\` (column 1)
+  ⛔ \`  * This is NOT a valid comment\` (indented — syntax error)
+- For indented/inline comments use \`"\`: \`  " This is an indented comment\`
 
 **Type compatibility:**
 - Integer literals are type I by default.
