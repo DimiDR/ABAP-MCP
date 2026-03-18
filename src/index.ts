@@ -1515,7 +1515,8 @@ const TOOLS: ToolDef[] = [
     description: "Writes source code to an existing ABAP object and activates it. Executes the full ADT workflow: lock → write → syntax check → activate → unlock.\n" +
       "✅ PREFERRED: Use 'sourcePath' — write the source to a local temp file first (e.g. /tmp/zsource.abap), then pass the path. This is faster, cheaper, and avoids JSON escaping issues. " +
       "Use inline 'source' only for very short snippets (< 20 lines).\n" +
-      "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, fix the source and retry — at most 3 times. If still failing, explain to the user.\n" +
+      "⚠️ IMPORTANT: After the call, the object MUST be activated. If syntax or activation errors occur, fix the source and retry. " +
+      "Stop only if the SAME error persists after 3 attempts. If DIFFERENT errors appear, keep iterating — that means progress is being made.\n" +
       "**Before the first write:** Call `validate_ddic_references` with the planned code to catch invalid field names early.\n" +
       "**Comments:** Full-line comments with `*` MUST start in column 1 (no indentation). For indented comments use `\"` instead.\n" +
       "⚠️ Requires ALLOW_WRITE=true.",
@@ -1731,7 +1732,11 @@ const S_FindTools = z.object({
 const FIND_TOOLS_ENTRY = {
   name: "find_tools",
   description: "Finds and enables ABAP tools by search term or category. " +
-    "Categories: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION. " +
+    "⚠️ Most tools are deferred — call this BEFORE using any non-core tool! " +
+    "Categories: SEARCH, READ, WRITE, CREATE, DELETE, TEST, " +
+    "QUALITY (syntax check, ATC, Clean ABAP review, DDIC validation), " +
+    "DIAGNOSTICS (short dumps, traces), TRANSPORT, ABAPGIT, QUERY, " +
+    "DOCUMENTATION (ABAP syntax help). " +
     "Enabled tools become immediately available.",
   schema: S_FindTools,
 };
@@ -1884,7 +1889,7 @@ Follow these principles when coding:
 4. If errors: fix field names. NEVER call \`write_abap_source\` if errors are reported!
 5. Only when \`validate_ddic_references\` reports ✅ → call \`write_abap_source\`.
 
-- For syntax/activation errors: analyze, fix, and retry
+- For syntax/activation errors: analyze, fix, and retry. Only stop if the SAME error persists after 3 attempts. If DIFFERENT errors appear, keep iterating — progress is being made
 - After implementation run \`run_syntax_check\` and optionally \`run_unit_tests\`
 
 ### Step 6: Quality check
