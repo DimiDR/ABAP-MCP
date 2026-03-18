@@ -588,6 +588,18 @@ type DdicValidationResult = {
 async function validateDdicReferencesInternal(client: ADTClient, source: string): Promise<DdicValidationResult> {
   const tableFieldMap = new Map<string, Set<string>>(); // tableName → Set<fieldName>
 
+  // Strip ABAP comments before processing to avoid false matches:
+  // - Full-line comments: lines starting with optional whitespace + *
+  // - Inline comments: everything after " on a code line
+  const stripComments = (src: string): string =>
+    src.split('\n').map(line => {
+      if (/^\s*\*/.test(line)) return '';        // full-line comment
+      const idx = line.indexOf('"');
+      return idx >= 0 ? line.substring(0, idx) : line;
+    }).join('\n');
+
+  const cleanSource = stripComments(source);
+
   const patterns = [
     /\bTYPE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
     /\bLIKE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
@@ -615,20 +627,20 @@ async function validateDdicReferencesInternal(client: ADTClient, source: string)
 
   for (const pattern of patterns) {
     let m: RegExpExecArray | null;
-    while ((m = pattern.exec(source)) !== null) {
+    while ((m = pattern.exec(cleanSource)) !== null) {
       addField(m[1].toUpperCase(), m[2].toUpperCase());
     }
   }
 
   const tildePattern = /\b([A-Z][A-Z0-9_]{2,30})~([A-Z][A-Z0-9_]{1,30})\b/gi;
   let tm: RegExpExecArray | null;
-  while ((tm = tildePattern.exec(source)) !== null) {
+  while ((tm = tildePattern.exec(cleanSource)) !== null) {
     addField(tm[1].toUpperCase(), tm[2].toUpperCase());
   }
 
   const selectPattern = /\bSELECT\s+(?:SINGLE\s+|DISTINCT\s+)?([\s\S]*?)\bFROM\s+([A-Z][A-Z0-9_\/]{2,30})\b([\s\S]*?)\./gi;
   let sm: RegExpExecArray | null;
-  while ((sm = selectPattern.exec(source)) !== null) {
+  while ((sm = selectPattern.exec(cleanSource)) !== null) {
     const [, selectList, tableName, rest] = sm;
     const t = tableName.toUpperCase();
     if (skipTable(t)) continue;
@@ -646,9 +658,17 @@ async function validateDdicReferencesInternal(client: ADTClient, source: string)
 
     const whereMatch = rest.match(/\bWHERE\b([\s\S]*)/i);
     if (whereMatch) {
-      for (const fm of whereMatch[1].matchAll(/\b([A-Z_][A-Z0-9_]*)\s*(?:=|<>|>=|<=|>|<|\bIN\b|\bLIKE\b|\bBETWEEN\b|\bIS\b)/gi)) {
-        const u = fm[1].toUpperCase();
-        if (!SQL_KW.has(u)) addField(t, u);
+      // Remove subqueries (inner SELECT ... ) to avoid attributing their WHERE fields
+      // to the outer table (e.g. KONV-VBELN from a nested SELECT FROM VBAK).
+      const whereClause = whereMatch[1].replace(/\(\s*SELECT\s+[\s\S]*?\)/gi, '');
+
+      // Skip fields that are tilde-qualified (table~field) — already handled above.
+      // Also skip fields in JOIN queries to avoid cross-table attribution.
+      if (!hasJoin) {
+        for (const fm of whereClause.matchAll(/(?<![~\w])([A-Z_][A-Z0-9_]*)\s*(?:=|<>|>=|<=|>|<|\bIN\b|\bLIKE\b|\bBETWEEN\b|\bIS\b)/gi)) {
+          const u = fm[1].toUpperCase();
+          if (!SQL_KW.has(u)) addField(t, u);
+        }
       }
     }
   }
