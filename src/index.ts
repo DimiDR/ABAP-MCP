@@ -444,6 +444,138 @@ function resolveMainProgram(mainProgram: string | undefined): string | undefined
   return `/sap/bc/adt/programs/programs/${mainProgram.toLowerCase()}`;
 }
 
+async function resolveSyntaxContext(
+  client: ADTClient,
+  objectUrl: string,
+  mainProgram?: string,
+  log?: string[],
+): Promise<string> {
+  const explicitMain = resolveMainProgram(mainProgram);
+  if (explicitMain) return explicitMain;
+
+  // Include-Programme brauchen ein Hauptprogramm als Kontext,
+  // sonst entstehen häufig "No component exists"-Fehler obwohl der Code korrekt ist.
+  if (objectUrl.includes("/programs/includes/")) {
+    try {
+      const mains = await client.mainPrograms(objectUrl);
+      const autoMain = mains[0]?.["adtcore:uri"];
+      if (autoMain) {
+        log?.push(`📎 Syntax-Kontext automatisch ermittelt: ${mains[0]["adtcore:name"]}`);
+        return autoMain;
+      }
+    } catch (e) {
+      log?.push(`⚠️ Hauptprogramm für Syntaxcheck konnte nicht ermittelt werden: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  return objectUrl;
+}
+
+type DdicValidationResult = {
+  tableCount: number;
+  validCount: number;
+  invalid: string[];
+  checks: string[];
+};
+
+async function validateDdicReferencesInternal(client: ADTClient, source: string): Promise<DdicValidationResult> {
+  const tableFieldMap = new Map<string, Set<string>>(); // tableName → Set<fieldName>
+
+  const patterns = [
+    /\bTYPE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
+    /\bLIKE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
+  ];
+
+  const skipTable = (t: string) =>
+    /^[LG][TSVO]_/.test(t) || /^[LG]S_/.test(t) ||
+    /^(C|N|I|F|P|X|D|T|STRING|XSTRING|ABAP_.*)$/.test(t);
+
+  const SQL_KW = new Set([
+    "SINGLE", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "AS", "CASE", "WHEN",
+    "THEN", "ELSE", "END", "UP", "TO", "ROWS", "APPENDING", "CORRESPONDING", "FIELDS",
+    "OF", "TABLE", "INTO", "FOR", "ALL", "ENTRIES", "IN", "AND", "OR", "NOT",
+    "ORDER", "BY", "GROUP", "HAVING", "INNER", "LEFT", "RIGHT", "OUTER", "JOIN", "ON",
+    "CROSS", "UNION", "EXCEPT", "INTERSECT", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL",
+    "ASCENDING", "DESCENDING", "CLIENT", "SPECIFIED", "BYPASSING", "BUFFER", "CONNECTION",
+    "WHERE", "FROM", "SELECT", "UPDATE", "DELETE", "INSERT", "MODIFY", "DATA", "VALUE",
+  ]);
+
+  const addField = (t: string, f: string) => {
+    if (skipTable(t) || SQL_KW.has(f)) return;
+    if (!tableFieldMap.has(t)) tableFieldMap.set(t, new Set());
+    tableFieldMap.get(t)!.add(f);
+  };
+
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(source)) !== null) {
+      addField(m[1].toUpperCase(), m[2].toUpperCase());
+    }
+  }
+
+  const tildePattern = /\b([A-Z][A-Z0-9_]{2,30})~([A-Z][A-Z0-9_]{1,30})\b/gi;
+  let tm: RegExpExecArray | null;
+  while ((tm = tildePattern.exec(source)) !== null) {
+    addField(tm[1].toUpperCase(), tm[2].toUpperCase());
+  }
+
+  const selectPattern = /\bSELECT\s+(?:SINGLE\s+|DISTINCT\s+)?([\s\S]*?)\bFROM\s+([A-Z][A-Z0-9_\/]{2,30})\b([\s\S]*?)\./gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = selectPattern.exec(source)) !== null) {
+    const [, selectList, tableName, rest] = sm;
+    const t = tableName.toUpperCase();
+    if (skipTable(t)) continue;
+
+    if (selectList.trim() !== "*") {
+      const tokens = selectList.match(/\b([A-Z_][A-Z0-9_]*)\b/gi) ?? [];
+      for (const tok of tokens) {
+        const u = tok.toUpperCase();
+        if (!SQL_KW.has(u)) addField(t, u);
+      }
+    }
+
+    const whereMatch = rest.match(/\bWHERE\b([\s\S]*)/i);
+    if (whereMatch) {
+      for (const fm of whereMatch[1].matchAll(/\b([A-Z_][A-Z0-9_]*)\s*(?:=|<>|>=|<=|>|<|\bIN\b|\bLIKE\b|\bBETWEEN\b|\bIS\b)/gi)) {
+        const u = fm[1].toUpperCase();
+        if (!SQL_KW.has(u)) addField(t, u);
+      }
+    }
+  }
+
+  if (tableFieldMap.size === 0) {
+    return { tableCount: 0, validCount: 0, invalid: [], checks: [] };
+  }
+
+  const tableNames = [...tableFieldMap.keys()];
+  const checks: string[] = [];
+  const invalid: string[] = [];
+  let validCount = 0;
+
+  await Promise.all(tableNames.map(async (tableName) => {
+    try {
+      const ddic = await client.ddicElement(tableName);
+      const knownFields = new Set((ddic.children ?? []).map((c: { name: string }) => c.name.toUpperCase()));
+      const referencedFields = tableFieldMap.get(tableName)!;
+
+      for (const field of referencedFields) {
+        if (knownFields.has(field)) {
+          validCount++;
+        } else {
+          invalid.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden (Tabelle hat ${knownFields.size} Felder)`);
+        }
+      }
+
+      checks.push(`  ✅ ${tableName}: ${referencedFields.size} referenzierte Felder geprüft`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      checks.push(`  ⚠️  ${tableName}: DDIC nicht auflösbar — ${msg.substring(0, 80)}`);
+    }
+  }));
+
+  return { tableCount: tableNames.length, validCount, invalid, checks: checks.sort() };
+}
+
 // ============================================================================
 // DOCUMENTATION HELPERS — fetch SAP help.sap.com pages
 // ============================================================================
@@ -1011,15 +1143,30 @@ async function writeWorkflow(
       log.push("✅ Quellcode gespeichert");
       await onProgress?.("✏️ Quellcode gespeichert");
 
+      // Frühe DDIC-Validierung verhindert typische Endlosschleifen mit Feldnamenfehlern
+      const ddicCheck = await validateDdicReferencesInternal(client, source);
+      if (ddicCheck.tableCount > 0) {
+        log.push(`🔎 DDIC-Validierung: ${ddicCheck.tableCount} Tabellen/Strukturen geprüft`);
+      }
+      if (ddicCheck.invalid.length > 0) {
+        log.push("❌ DDIC-Validierung fehlgeschlagen — Code NICHT aktiviert.");
+        log.push(...ddicCheck.invalid.slice(0, 50));
+        if (ddicCheck.invalid.length > 50) {
+          log.push(`... und ${ddicCheck.invalid.length - 50} weitere DDIC-Fehler`);
+        }
+        log.push("👉 Bitte korrigiere die ungültigen Feldnamen und rufe write_abap_source erneut auf.");
+        return { success: false, log, syntaxErrors: ddicCheck.invalid };
+      }
+
       // Phase 2: unlock + syntaxCheck in parallel (no lock needed for check)
       log.push("🔓 Lock freigeben + 🔍 Syntaxcheck (parallel)...");
-      const resolvedMain = resolveMainProgram(mainProgram) ?? objectUrl;
+      const syntaxContext = await resolveSyntaxContext(client, objectUrl, mainProgram, log);
       const [, syntaxRes] = await Promise.all([
         client.unLock(objectUrl, lockHandle).catch((e) => {
           log.push(`⚠️ Unlock fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
         }),
         !skipCheck
-          ? client.syntaxCheck(objectUrl, resolvedMain, source).catch((e) => {
+          ? client.syntaxCheck(objectUrl, syntaxContext, source).catch((e) => {
               log.push(`⚠️ Syntaxcheck fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
               return null; // null = check failed
             })
@@ -1192,11 +1339,10 @@ const TOOLS: ToolDef[] = [
     schema: S_RunAtc },
   { name: "validate_ddic_references",
     description:
-      "Analysiert ABAP-Quellcode statisch und prüft alle referenzierten Tabellenfelder " +
-      "(TYPE tabelle-feld, LIKE tabelle-feld) gegen die DDIC-Metadaten. " +
+      "Analysiert ABAP-Quellcode statisch und prüft alle referenzierten Tabellenfelder gegen die DDIC-Metadaten. " +
       "Gibt eine Liste ungültiger Feldnamen zurück. " +
-      "⚡ Empfohlen vor write_abap_source aufzurufen um 'No component exists'-Fehler zu vermeiden. " +
-      "Prüft alle ABAP-Standardmuster: TYPE/LIKE tab-field, SELECT-FROM, struct-field-Zugriffe.",
+      "⚡ Empfohlen vor write_abap_source aufzurufen um 'Field unknown'-Syntaxfehler zu vermeiden. " +
+      "Erkennt: (1) TYPE/LIKE tab-field, (2) table~field (New SQL), (3) SELECT-Feldliste FROM table, (4) WHERE-Klausel-Felder.",
     schema: S_ValidateDdic },
 
   // ── DIAGNOSTICS ─────────────────────────────────────────────────────────
@@ -1427,8 +1573,20 @@ Beim Coding folgende Prinzipien beachten:
 - Bei Klassen: Richtige Methode / richtiges Include wählen
 - Bei FuGr: Richtigen Funktionsbaustein identifizieren
 
+### Schritt 4b: DDIC-Strukturen nachschlagen (PFLICHT bei DB-Tabellen)
+⚠️ **BEVOR du Code schreibst**, der Datenbankfelder verwendet:
+1. Identifiziere alle Tabellen/Strukturen, die du im Code referenzieren willst (z.B. VBAK, VBAP, KNA1, EKKO …).
+2. Rufe für **jede** dieser Tabellen \`get_object_info(objectUrl=<adt-url-der-tabelle>)\` auf — die ADT-URL ermittelst du via \`search_abap_objects(query=<tabellenname>, objectType="TABL")\`.
+3. Lies die zurückgegebenen Felder **vollständig** und merke dir die **exakten** Feldnamen.
+4. Verwende im Code **ausschließlich** Feldnamen, die du in Schritt 3 gesehen hast. NIEMALS Feldnamen erfinden oder raten!
+
 ### Schritt 5: Implementierung
-- Schreibe den Code mit \`write_abap_source\`
+⚠️ **PFLICHT vor dem ersten write_abap_source-Aufruf:**
+1. Schreibe den geplanten Code auf Basis der in Schritt 4b nachgeschlagenen echten Feldnamen.
+2. Rufe \`validate_ddic_references(source=<geplanter_code>)\` auf — als finale Absicherung.
+3. Falls Fehler gemeldet werden: Korrigiere die Feldnamen anhand der Vorschläge. NIEMALS write_abap_source aufrufen, wenn validate_ddic_references Fehler meldet!
+4. Erst wenn validate_ddic_references ✅ meldet → \`write_abap_source\` aufrufen.
+
 - Bei Syntax-/Aktivierungsfehlern: Analysiere, korrigiere, und versuche erneut
 - Führe nach der Implementierung \`run_syntax_check\` und ggf. \`run_unit_tests\` aus
 
@@ -1832,7 +1990,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       // ── run_syntax_check ────────────────────────────────────────────────
       case "run_syntax_check": {
         const p = S_SyntaxCheck.parse(args);
-        const res = await client.syntaxCheck(p.objectUrl, resolveMainProgram(p.mainProgram) ?? p.objectUrl, p.source);
+        const syntaxContext = await resolveSyntaxContext(client, p.objectUrl, p.mainProgram);
+        const res = await client.syntaxCheck(p.objectUrl, syntaxContext, p.source);
         const msgs     = Array.isArray(res) ? res : [];
         const errors   = msgs.filter((m: { severity: string }) => ["E", "A"].includes(m.severity));
         const warnings = msgs.filter((m: { severity: string }) => m.severity === "W");
@@ -1869,18 +2028,66 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           /\bLIKE\s+([A-Z][A-Z0-9_]{1,30})-([A-Z][A-Z0-9_]{1,30})\b/gi,
         ];
 
+        // Helper: Tabellen-/Feldname zur Map hinzufügen mit Standardfiltern
+        const skipTable = (t: string) =>
+          /^[LG][TSVO]_/.test(t) || /^[LG]S_/.test(t) ||
+          /^(C|N|I|F|P|X|D|T|STRING|XSTRING|ABAP_.*)$/.test(t);
+
+        const SQL_KW = new Set([
+          'SINGLE','DISTINCT','COUNT','SUM','AVG','MIN','MAX','AS','CASE','WHEN',
+          'THEN','ELSE','END','UP','TO','ROWS','APPENDING','CORRESPONDING','FIELDS',
+          'OF','TABLE','INTO','FOR','ALL','ENTRIES','IN','AND','OR','NOT',
+          'ORDER','BY','GROUP','HAVING','INNER','LEFT','RIGHT','OUTER','JOIN','ON',
+          'CROSS','UNION','EXCEPT','INTERSECT','EXISTS','BETWEEN','LIKE','IS','NULL',
+          'ASCENDING','DESCENDING','CLIENT','SPECIFIED','BYPASSING','BUFFER','CONNECTION',
+          'WHERE','FROM','SELECT','UPDATE','DELETE','INSERT','MODIFY','DATA','VALUE',
+        ]);
+
+        const addField = (t: string, f: string) => {
+          if (skipTable(t) || SQL_KW.has(f)) return;
+          if (!tableFieldMap.has(t)) tableFieldMap.set(t, new Set());
+          tableFieldMap.get(t)!.add(f);
+        };
+
+        // ── Pattern 1+2: TYPE/LIKE table-field ──
         for (const pattern of patterns) {
           let m: RegExpExecArray | null;
           while ((m = pattern.exec(source)) !== null) {
-            const [, table, field] = m;
-            const t = table.toUpperCase();
-            const f = field.toUpperCase();
-            // Skip lokale Variablen (lt_*, ls_*, lv_*, etc.) als Tabellenname
-            if (/^[LG][TSVO]_/.test(t) || /^[LG]S_/.test(t)) continue;
-            // Skip ABAP Built-in Typen (C, N, I, F, P, X, D, T, STRING, XSTRING)
-            if (/^(C|N|I|F|P|X|D|T|STRING|XSTRING|ABAP_.*)$/.test(t)) continue;
-            if (!tableFieldMap.has(t)) tableFieldMap.set(t, new Set());
-            tableFieldMap.get(t)!.add(f);
+            addField(m[1].toUpperCase(), m[2].toUpperCase());
+          }
+        }
+
+        // ── Pattern 3: table~field (New ABAP SQL Syntax) ──
+        const tildePattern = /\b([A-Z][A-Z0-9_]{2,30})~([A-Z][A-Z0-9_]{1,30})\b/gi;
+        let tm: RegExpExecArray | null;
+        while ((tm = tildePattern.exec(source)) !== null) {
+          addField(tm[1].toUpperCase(), tm[2].toUpperCase());
+        }
+
+        // ── Pattern 4: SELECT [SINGLE] fields FROM table [WHERE ...]. ──
+        const selectPattern = /\bSELECT\s+(?:SINGLE\s+|DISTINCT\s+)?([\s\S]*?)\bFROM\s+([A-Z][A-Z0-9_\/]{2,30})\b([\s\S]*?)\./gi;
+        let sm: RegExpExecArray | null;
+        while ((sm = selectPattern.exec(source)) !== null) {
+          const [, selectList, tableName, rest] = sm;
+          const t = tableName.toUpperCase();
+          if (skipTable(t)) continue;
+
+          // Felder aus SELECT-Liste (nicht *, nicht ~-prefixed — die fängt Pattern 3 ab)
+          if (selectList.trim() !== '*') {
+            const tokens = selectList.match(/\b([A-Z_][A-Z0-9_]*)\b/gi) ?? [];
+            for (const tok of tokens) {
+              const u = tok.toUpperCase();
+              if (!SQL_KW.has(u)) addField(t, u);
+            }
+          }
+
+          // Felder aus WHERE-Klausel (Feld vor Vergleichsoperator)
+          const whereMatch = rest.match(/\bWHERE\b([\s\S]*)/i);
+          if (whereMatch) {
+            for (const fm of whereMatch[1].matchAll(/\b([A-Z_][A-Z0-9_]*)\s*(?:=|<>|>=|<=|>|<|\bIN\b|\bLIKE\b|\bBETWEEN\b|\bIS\b)/gi)) {
+              const u = fm[1].toUpperCase();
+              if (!SQL_KW.has(u)) addField(t, u);
+            }
           }
         }
 
@@ -1908,7 +2115,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                 validCount++;
               } else {
                 errorCount++;
-                errors.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden (Tabelle hat ${knownFields.size} Felder)`);
+                // Ähnliche Felder suchen (enthält Feldname oder Feldname enthält similar)
+                const similar = [...knownFields].filter(k =>
+                  k.includes(field) || field.includes(k) ||
+                  (k.length > 3 && field.length > 3 && (k.startsWith(field.substring(0, 4)) || field.startsWith(k.substring(0, 4))))
+                ).slice(0, 5);
+                const hint = similar.length > 0 ? ` → Ähnliche Felder: ${similar.join(', ')}` : ` (Tabelle hat ${knownFields.size} Felder)`;
+                errors.push(`  ❌ ${tableName}-${field}: Feld nicht gefunden${hint}`);
               }
             }
 
