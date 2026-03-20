@@ -628,6 +628,7 @@ function toJsonSchema(schema: z.ZodTypeAny): object {
     if (s instanceof z.ZodArray)   return { type: "array", items: c(s.element), ...desc(s) };
     if (s instanceof z.ZodOptional) return c(s.unwrap());
     if (s instanceof z.ZodDefault)  return c(s._def.innerType);
+    if (s instanceof z.ZodEffects)  return c(s._def.schema);
     if (s instanceof z.ZodEnum)     return { type: "string", enum: s.options, ...desc(s) };
     if (s instanceof z.ZodString)   return { type: "string", ...desc(s) };
     if (s instanceof z.ZodNumber)   return { type: "number", ...desc(s) };
@@ -1718,6 +1719,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
 
 const CORE_TOOL_NAMES = new Set([
   "find_tools",
+  "list_tools",
   "search_abap_objects",
   "read_abap_source",
   "write_abap_source",
@@ -1750,8 +1752,76 @@ const FIND_TOOLS_ENTRY = {
   schema: S_FindTools,
 };
 
-// Build combined tool list (TOOLS + find_tools)
-const ALL_TOOLS = [...TOOLS, FIND_TOOLS_ENTRY];
+// ── list_tools: compact overview of ALL tools ─────────────────────────────
+const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
+  search_abap_objects:    "Search objects by name pattern (wildcard *)",
+  search_source_code:    "Full-text search across all ABAP source code",
+  read_abap_source:      "Read source code (with includeRelated for full context)",
+  get_object_info:       "Read metadata/structure of an object",
+  where_used:            "Find all usages of an object in the system",
+  get_code_completion:   "Code completion suggestions for a cursor position",
+  find_definition:       "Navigate to the definition of a token in source",
+  get_revisions:         "Version history of an object (date, author, transport)",
+  get_ddic_element:      "DDIC info for table/view/data element/domain",
+  get_table_contents:    "Read table contents directly as JSON",
+  get_fix_proposals:     "Quick-fix proposals for a source position",
+  analyze_abap_context:  "Deep context analysis: source + includes + references",
+  write_abap_source:     "Write source & activate (lock→write→check→activate→unlock)",
+  activate_abap_object:  "Activate a saved object",
+  mass_activate:         "Activate multiple objects at once",
+  pretty_print:          "Format source via SAP Pretty Printer",
+  create_abap_program:   "Create new program (report/include)",
+  create_abap_class:     "Create new class (ZCL_/YCL_)",
+  create_abap_interface: "Create new interface (ZIF_/YIF_)",
+  create_function_group: "Create new function group",
+  create_cds_view:       "Create new CDS view (DDLS)",
+  create_database_table: "Create new transparent table (TABL)",
+  create_message_class:  "Create new message class (MSAG)",
+  delete_abap_object:    "Permanently delete an object (⛔ irreversible)",
+  run_unit_tests:        "Run ABAP Unit Tests, return results",
+  create_test_include:   "Create test include (CCAU) for a class",
+  run_syntax_check:      "Syntax check without saving",
+  run_atc_check:         "ATC check (code quality findings)",
+  validate_ddic_references: "Check field references against DDIC before writing",
+  review_clean_abap:     "Static Clean ABAP compliance review",
+  get_short_dumps:       "List latest short dumps (ST22)",
+  get_short_dump_detail: "Details of a specific short dump",
+  get_traces:            "List performance traces (SAT)",
+  get_trace_detail:      "Details of a specific trace",
+  get_transport_info:    "Available transports for an object/package",
+  get_transport_objects:  "List objects in a transport request",
+  create_transport:      "Create a new transport request",
+  get_abapgit_repos:     "List abapGit repositories in the system",
+  abapgit_pull:          "Pull from Git into SAP (abapGit)",
+  run_select_query:      "Execute SELECT on SAP tables (read-only)",
+  execute_abap_snippet:  "Run temporary ABAP code snippet (auto-deleted)",
+  get_inactive_objects:   "List inactive objects of current user",
+  get_abap_keyword_doc:  "ABAP keyword docs from help.sap.com",
+  get_abap_class_doc:    "ABAP class/interface docs from help.sap.com",
+  get_module_best_practices: "Module-specific SAP best practices (FI, MM, SD…)",
+  search_clean_abap:     "Search Clean ABAP Styleguide for best practices",
+  search_abap_syntax:    "Search ABAP syntax docs from help.sap.com",
+  find_tools:            "Find & enable deferred tools by category/query",
+  list_tools:            "Compact overview of ALL available tools & status",
+};
+
+const S_ListTools = z.object({
+  category: z.string().optional().describe(
+    "Filter by category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION. Omit for all."
+  ),
+});
+
+const LIST_TOOLS_ENTRY = {
+  name: "list_tools",
+  description:
+    "Returns a compact overview of ALL 47+ available tools with short descriptions, grouped by category. " +
+    "Shows which tools are currently active (core/enabled) vs. deferred. " +
+    "Use this to discover the right tool for a task. Unlike find_tools, this does NOT enable tools — it only lists them.",
+  schema: S_ListTools,
+};
+
+// Build combined tool list (TOOLS + find_tools + list_tools)
+const ALL_TOOLS = [...TOOLS, FIND_TOOLS_ENTRY, LIST_TOOLS_ENTRY];
 
 // ============================================================================
 // MCP SERVER
@@ -3419,6 +3489,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           return err(`No best practices available for module '${p.module}'. Available modules: ${Object.keys(MODULE_BEST_PRACTICES).join(", ")}`);
         }
         return ok(practices);
+      }
+
+      // ── list_tools ──────────────────────────────────────────────────────
+      case "list_tools": {
+        const p = S_ListTools.parse(args);
+        const categoriesToShow = p.category
+          ? { [p.category.toUpperCase()]: TOOL_CATEGORIES[p.category.toUpperCase()] }
+          : TOOL_CATEGORIES;
+
+        if (p.category && !TOOL_CATEGORIES[p.category.toUpperCase()]) {
+          return err(`Unknown category '${p.category}'. Available: ${Object.keys(TOOL_CATEGORIES).join(", ")}`);
+        }
+
+        const lines: string[] = [];
+        for (const [cat, names] of Object.entries(categoriesToShow)) {
+          lines.push(`\n── ${cat} ──`);
+          for (const n of names) {
+            const isCore = CORE_TOOL_NAMES.has(n);
+            const isEnabled = enabledTools.has(n);
+            const status = isCore ? "core" : isEnabled ? "active" : "deferred";
+            const desc = TOOL_SHORT_DESCRIPTIONS[n] ?? "";
+            lines.push(`  [${status}] ${n} — ${desc}`);
+          }
+        }
+
+        // Add meta tools
+        if (!p.category) {
+          lines.push(`\n── META ──`);
+          for (const n of ["find_tools", "list_tools"]) {
+            const desc = TOOL_SHORT_DESCRIPTIONS[n] ?? "";
+            lines.push(`  [core] ${n} — ${desc}`);
+          }
+        }
+
+        const summary = p.category
+          ? ""
+          : `\nTotal: ${TOOLS.length} tools + 2 meta-tools. ` +
+            `Core (always available): ${CORE_TOOL_NAMES.size}. ` +
+            `Deferred tools need find_tools(category=...) to enable.\n`;
+
+        return ok(summary + lines.join("\n"));
       }
 
       // ── find_tools ──────────────────────────────────────────────────────
