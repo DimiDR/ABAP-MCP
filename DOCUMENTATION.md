@@ -40,7 +40,7 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**47 Tools** in 12 Gruppen + 1 Meta-Tool + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**47 Tools** in 12 Gruppen + 2 Meta-Tools + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
@@ -56,10 +56,10 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
 | QUERY | 3 | SELECT-Statements, inaktive Objekte, ABAP-Snippets ausführen |
 | DOCUMENTATION | 5 | ABAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices, Clean ABAP, ABAP-Syntax |
-| META | 1 | Tool-Finder für dynamische Tool-Registrierung |
+| META | 2 | Tool-Finder und Tool-Übersicht für dynamische Tool-Registrierung |
 | PROMPTS | 1 | `abap_develop` — Intelligenter ABAP-Entwicklungsworkflow |
 
-> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 9 Kern-Tools geladen.
+> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 10 Kern-Tools geladen.
 > Weitere Tools werden on-demand über `find_tools` aktiviert — das spart ~75-80% Tokens pro `tools/list`-Aufruf.
 
 ---
@@ -146,6 +146,7 @@ cp .env.example .env
 | `SYNTAX_CHECK_BEFORE_ACTIVATE` | | `true` | Syntaxcheck vor Aktivierung erzwingen |
 | `MAX_DUMPS` | | `20` | Maximale Anzahl Short Dumps |
 | `SAP_ABAP_VERSION` | | `latest` | ABAP-Version für help.sap.com Dokumentation (z.B. `latest`, `758`, `754`) |
+| `SAP_ALLOW_UNAUTHORIZED` | | `false` | Self-signed SSL-Zertifikate akzeptieren (nur DEV!) |
 | `DEFER_TOOLS` | | `true` | Tool-Deferred-Modus: initial nur Kern-Tools laden |
 
 ### Beispiel .env (Entwicklungssystem)
@@ -249,7 +250,28 @@ Kategorieübersicht anzeigen
 → find_tools()
 ```
 
-**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `find_tools`
+**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `find_tools`, `list_tools`
+
+---
+
+#### `list_tools`
+
+Gibt eine kompakte Übersicht aller verfügbaren Tools mit Kurzbeschreibungen zurück, gruppiert nach Kategorie. Zeigt welche Tools aktiv (core/enabled) vs. deferred sind. Aktiviert **keine** Tools — nutzt man nur zur Orientierung.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `category` | string | | Filter nach Kategorie: `SEARCH`, `READ`, `WRITE`, `CREATE`, `DELETE`, `TEST`, `QUALITY`, `DIAGNOSTICS`, `TRANSPORT`, `ABAPGIT`, `QUERY`, `DOCUMENTATION`. Leer = alle. |
+
+**Beispiele:**
+```
+Alle verfügbaren Tools anzeigen
+→ list_tools()
+
+Nur READ-Tools anzeigen
+→ list_tools(category="READ")
+```
 
 ---
 
@@ -318,18 +340,19 @@ Finde alle Stellen wo BAPI_USER_GET_DETAIL verwendet wird
 
 #### `read_abap_source`
 
-Liest den vollständigen Quellcode eines ABAP-Objekts.
+Liest den vollständigen Quellcode eines ABAP-Objekts. Mit `includeRelated=true` werden alle zugehörigen Objekte automatisch mitgelesen: Klassen-Includes (Definitionen, Implementierungen, Makros, Test-Klassen), Programm-Includes (INCLUDE-Statements aufgelöst), Funktionsgruppen-Includes.
 
 **Parameter:**
 
 | Parameter | Typ | Pflicht | Beschreibung |
 |-----------|-----|---------|--------------|
 | `objectUrl` | string | ✓ | ADT-URL des Objekts |
+| `includeRelated` | boolean | | Alle zugehörigen Objekte mitlesen (Default: false). Empfohlen um den vollen Kontext zu verstehen. |
 
 **Beispiel:**
 ```
-Lies den Quellcode von ZCL_BILLING_SERVICE
-→ read_abap_source(objectUrl="/sap/bc/adt/oo/classes/zcl_billing_service")
+Lies den Quellcode von ZCL_BILLING_SERVICE mit allen Includes
+→ read_abap_source(objectUrl="/sap/bc/adt/oo/classes/zcl_billing_service", includeRelated=true)
 ```
 
 ---
@@ -371,7 +394,105 @@ Holt Code-Vervollständigungsvorschläge vom SAP-System für eine Cursor-Positio
 | `source` | string | ✓ | Aktueller Quellcode |
 | `line` | number | ✓ | Cursor-Zeile (1-basiert) |
 | `column` | number | ✓ | Cursor-Spalte (0-basiert) |
+
+---
+
+#### `find_definition`
+
+Navigiert zur Definition eines Tokens (Variable, Methode, Klasse usw.) im Quellcode. Gibt URI, Zeile und Spalte der Definition zurück.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `objectUrl` | string | ✓ | ADT-URL des Quellobjekts (Kontext) |
+| `source` | string | ✓ | Aktueller Quellcode |
+| `line` | number | ✓ | Token-Zeile (1-basiert) |
+| `startColumn` | number | ✓ | Token Start-Spalte (0-basiert) |
+| `endColumn` | number | ✓ | Token End-Spalte (0-basiert) |
 | `mainProgram` | string | | Hauptprogramm (für Includes) |
+
+**Beispiel:**
+```
+Definition einer Methode finden
+→ find_definition(objectUrl="/sap/bc/adt/oo/classes/zcl_foo", source="...", line=10, startColumn=5, endColumn=15)
+```
+
+---
+
+#### `get_revisions`
+
+Liest die Versionshistorie eines ABAP-Objekts. Gibt alle gespeicherten Revisionen mit Datum, Autor und Transportauftrag zurück.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `objectUrl` | string | ✓ | ADT-URL des Objekts |
+
+**Beispiel:**
+```
+Versionshistorie einer Klasse abrufen
+→ get_revisions(objectUrl="/sap/bc/adt/oo/classes/zcl_billing_service")
+```
+
+---
+
+#### `get_ddic_element`
+
+Liest detaillierte DDIC-Informationen für eine Tabelle, View, Datenelement oder Domäne. Gibt Felder, Typen, Annotationen und Assoziationen zurück.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `path` | string | ✓ | DDIC-Pfad, z.B. Tabellenname oder CDS-View-Name |
+
+**Beispiel:**
+```
+Felder der Tabelle T001 anzeigen
+→ get_ddic_element(path="T001")
+```
+
+---
+
+#### `get_table_contents`
+
+Liest Tabelleninhalte direkt aus einer DDIC-Tabelle. Gibt die Daten als JSON zurück.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `tableName` | string | ✓ | Name der DDIC-Tabelle |
+| `maxRows` | number | | Max. Anzahl Zeilen (1–1000, Default: 100) |
+
+**Beispiel:**
+```
+Erste 10 Buchungskreise lesen
+→ get_table_contents(tableName="T001", maxRows=10)
+```
+
+---
+
+#### `get_fix_proposals`
+
+Holt Quick-Fix-Vorschläge für eine bestimmte Position im Quellcode (z.B. fehlende Methode implementieren, Variable deklarieren).
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `objectUrl` | string | ✓ | ADT-URL des Objekts |
+| `source` | string | ✓ | Aktueller Quellcode |
+| `line` | number | ✓ | Fehler-Zeile (1-basiert) |
+| `column` | number | ✓ | Fehler-Spalte (0-basiert) |
+
+**Beispiel:**
+```
+Fix-Vorschläge für Zeile 15 abrufen
+→ get_fix_proposals(objectUrl="/sap/bc/adt/oo/classes/zcl_foo", source="...", line=15, column=0)
+```
 
 ---
 
@@ -441,10 +562,14 @@ Bei Syntaxfehlern wird **nicht aktiviert** und der Lock automatisch freigegeben.
 | Parameter | Typ | Pflicht | Beschreibung |
 |-----------|-----|---------|--------------|
 | `objectUrl` | string | ✓ | ADT-URL (ohne `/source/main`) |
-| `source` | string | ✓ | Vollständiger ABAP-Quellcode |
+| `source` | string | | Vollständiger ABAP-Quellcode — nur für kurze Snippets (< 20 Zeilen). Für größere Programme `sourcePath` verwenden. |
+| `sourcePath` | string | | **BEVORZUGT:** Pfad zu einer lokalen Datei mit dem ABAP-Quellcode. Schneller, günstiger und vermeidet JSON-Escaping-Probleme. |
 | `transport` | string | | Transportauftrag |
 | `activateAfterWrite` | boolean | | Aktivieren nach dem Schreiben (Default: true) |
 | `skipSyntaxCheck` | boolean | | Syntaxcheck überspringen (Default: false) |
+| `mainProgram` | string | | Hauptprogramm für Syntaxcheck von Includes — Name (z.B. ZRYBAK_AI_TEST) oder ADT-URL |
+
+> **Hinweis:** Entweder `source` oder `sourcePath` muss angegeben werden.
 
 ---
 
@@ -482,9 +607,9 @@ Formatiert ABAP-Quellcode über den SAP Pretty Printer. **Speichert nichts**, li
 | Parameter | Typ | Pflicht | Beschreibung |
 |-----------|-----|---------|--------------|
 | `source` | string | ✓ | Zu formatierender Quellcode |
-| `objectUrl` | string | | ADT-URL für Kontext |
-| `indentation` | boolean | | Einrückung normalisieren (Default: true) |
-| `style` | enum | | `keywordUpper` \| `keywordLower` \| `keywordMixed` (Default: keywordUpper) |
+| `objectUrl` | string | | ADT-URL für Kontext (optional) |
+
+> **Hinweis:** Einrückung und Keyword-Schreibweise werden serverseitig konfiguriert (SE38 → Einstellungen).
 
 ---
 
@@ -862,6 +987,27 @@ Listet alle Objekte in einem Transportauftrag auf.
 
 ---
 
+#### `create_transport`
+
+Erstellt einen neuen Transportauftrag. Gibt die Transportnummer zurück. ⚠️ Erfordert `ALLOW_WRITE=true`.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `objectUrl` | string | ✓ | ADT-URL des Objekts |
+| `description` | string | ✓ | Transportbeschreibung (max. 60 Zeichen) |
+| `devClass` | string | ✓ | Paket |
+| `transportLayer` | string | | Transport-Layer (optional) |
+
+**Beispiel:**
+```
+Neuen Transport erstellen
+→ create_transport(objectUrl="/sap/bc/adt/oo/classes/zcl_foo", description="Neue Billing-Logik", devClass="ZLOCAL")
+```
+
+---
+
 ### ABAPGIT — Git-Integration
 
 #### `get_abapgit_repos`
@@ -956,6 +1102,20 @@ Systemvariablen ausgeben
 
 ---
 
+#### `get_inactive_objects`
+
+Listet alle inaktiven (noch nicht aktivierten) Objekte des aktuellen Benutzers auf.
+
+**Parameter:** Keine.
+
+**Beispiel:**
+```
+Inaktive Objekte anzeigen
+→ get_inactive_objects()
+```
+
+---
+
 ### DOCUMENTATION — SAP-Dokumentation
 
 #### `get_abap_keyword_doc`
@@ -1026,6 +1186,52 @@ Allgemeine ABAP Best Practices
 ```
 
 > **Aliase:** `HCM` liefert HR-Inhalte, `BC` liefert BASIS-Inhalte.
+
+---
+
+#### `search_clean_abap`
+
+Durchsucht den offiziellen SAP Clean ABAP Styleguide (github.com/SAP/styleguides) nach Best Practices, Namenskonventionen, Coding-Richtlinien und Anti-Patterns. Gibt die relevantesten Abschnitte zurück. **Vor dem Schreiben neuen Codes aufrufen** um Clean ABAP Konventionen einzuhalten.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `query` | string | ✓ | Suchbegriff im Clean ABAP Guide (z.B. `naming conventions`, `error handling`, `method length`) |
+| `maxResults` | number | | Max. Anzahl Abschnitte (1–5, Default: 2) |
+
+**Beispiele:**
+```
+Namenskonventionen nachschlagen
+→ search_clean_abap(query="naming conventions")
+
+Error Handling Best Practices
+→ search_clean_abap(query="error handling", maxResults=3)
+```
+
+---
+
+#### `search_abap_syntax`
+
+Durchsucht die offizielle ABAP-Syntaxdokumentation von help.sap.com anhand einer Freitext-Suche. Identifiziert automatisch das Haupt-Keyword, lädt die Dokumentationsseite und gibt den relevanten Syntax-Abschnitt zurück. **Vor dem Schreiben von ABAP-Code aufrufen** um korrekte Syntax sicherzustellen.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `query` | string | ✓ | Freitext-Suche für ABAP-Syntax (z.B. `SELECT UP TO ROWS`, `LOOP AT clause order`, `READ TABLE WITH KEY`) |
+| `version` | string | | ABAP-Version (z.B. `latest`, `758`, `754`). Default: `SAP_ABAP_VERSION` |
+
+**Beispiele:**
+```
+SELECT-Syntax nachschlagen
+→ search_abap_syntax(query="SELECT UP TO ROWS")
+
+LOOP AT Klausel-Reihenfolge prüfen
+→ search_abap_syntax(query="LOOP AT clause order")
+```
+
+> **Hinweis:** Dieses Tool ist ein Kern-Tool und immer verfügbar (auch im Deferred-Modus).
 
 ---
 

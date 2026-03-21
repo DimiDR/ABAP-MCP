@@ -29,7 +29,7 @@ npm run clean
 - TypeScript 5.7+ with strict mode
 - Node.js 20+
 - Target: ES2022
-- Output: CommonJS modules to `dist/`
+- Output: ESM (`"type": "module"`) to `dist/`, module resolution: NodeNext
 
 ## Architecture
 
@@ -42,7 +42,7 @@ npm run clean
   - `tool-definitions.ts` — 47 tool metadata (name, description, schema)
   - `tool-registry.ts` — categories, core tools, deferred loading
   - `handler-map.ts` — dispatch map (tool name → handler function)
-  - `handlers/` — 13 handler modules (search, read, write, create, delete, test, quality, diagnostics, transport, abapgit, query, documentation, context, meta)
+  - `handlers/` — 14 handler modules (search, read, write, create, delete, test, quality, diagnostics, transport, abapgit, query, documentation, context, meta)
 - **Helpers**: `src/helpers/` — JSON schema conversion, DDIC validation, documentation fetching, Clean ABAP analysis
 - **Connection**: Lazy-initialized single `ADTClient` instance reused across all tool calls
 - **Transport**: stdio-based MCP protocol with `@modelcontextprotocol/sdk`
@@ -76,6 +76,14 @@ lock(objectUrl)
 - `SAP_URL` — System URL (e.g., `https://dev-system:8000`)
 - `SAP_USER`, `SAP_PASSWORD` — Credentials
 
+**Optional:**
+- `SAP_CLIENT=100` (default) — SAP client number
+- `SAP_LANGUAGE=EN` (default) — Logon language
+- `DEFAULT_TRANSPORT` — Default transport request for write operations
+- `SYNTAX_CHECK_BEFORE_ACTIVATE=true` (default) — Set `false` to skip syntax check before activation
+- `MAX_DUMPS=20` (default) — Max short dumps returned by diagnostics
+- `SAP_ALLOW_UNAUTHORIZED=false` (default) — Accept self-signed SSL certificates
+
 **Safety Guards (all default-safe):**
 - `ALLOW_WRITE=false` (default) — Disables all write/create/delete tools
 - `ALLOW_DELETE=false` (default) — Requires `ALLOW_WRITE=true` + explicit enable
@@ -96,8 +104,19 @@ lock(objectUrl)
 
 ## Key Patterns & Implementation Details
 
+### ESM Import Convention
+All imports use `.js` extensions (e.g., `import { cfg } from "./config.js"`) as required by NodeNext module resolution, even though source files are `.ts`.
+
+### Adding a New Tool
+1. Add Zod schema in `src/schemas.ts`
+2. Add tool definition in `src/tools/tool-definitions.ts` (name, description, schema)
+3. Create or extend a handler in `src/tools/handlers/`
+4. Register handler in `src/tools/handler-map.ts`
+5. Add to the appropriate category in `src/tools/tool-registry.ts`
+6. Handler signature: `(client: ADTClient, args: Record<string, unknown>) => Promise<ToolResult>` (see `src/types.ts`)
+
 ### Parameter Validation
-All tools use Zod schemas (defined near line 185). Schemas include descriptions visible to clients and enforce type safety. Examples:
+All tools use Zod schemas (in `src/schemas.ts`). Schemas include descriptions visible to clients and enforce type safety. Examples:
 - `S_Search`, `S_ReadSource`, `S_WriteSource`, `S_CreateProgram` etc.
 
 ### Error Handling
@@ -121,14 +140,6 @@ All tools use Zod schemas (defined near line 185). Schemas include descriptions 
 - Erfordert `ALLOW_WRITE=true` **und** `ALLOW_EXECUTE=true` — doppelte Sicherheitsebene
 - Wrapped in `withWriteLock` + `withStatefulSession` für Concurrency-Safety
 - Bekannte Limitation: Ausgabe-Format hängt von ADT-Version ab (NW 7.52+)
-
-## Important Context from Documentation
-
-- **47 Tools in 12 Groups + 2 Meta-Tools + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
-- **ADT-Based**: Uses `/sap/bc/adt/*` endpoints (SICF must be active on SAP side)
-- **Write Safety**: Lock conflicts prevented by serial execution; syntax errors block activation; incomplete unlocks logged for manual recovery (SE03)
-- **Token Budget**: Default deferred mode targets ~75% reduction in tokens per `tools/list` call
-- **Namespace Protection**: Z/Y prefixes enforced for creation; customer packages checked against `BLOCKED_PACKAGES`
 
 ## When to Read DOCUMENTATION.md
 

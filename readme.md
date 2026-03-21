@@ -1,8 +1,13 @@
-Drei Schritte:
+# ABAP MCP Server v2
+
+Standalone MCP Server für agentives ABAP-Development — 47+ Tools via ADT REST API.
+
+---
+
+## Quickstart
 
 **1. Abhängigkeiten installieren & bauen**
 ```bash
-cd abap-mcp-server-v2
 npm install
 npm run build
 ```
@@ -38,9 +43,13 @@ Wenn alles klappt, siehst du:
 
 ---
 
+## MCP-Client Konfiguration
+
 **Wichtig:** Den Server rufst du normalerweise **nicht manuell** auf — er wird vom MCP-Client (Claude Desktop, Claude Code usw.) automatisch gestartet. Du trägst ihn einmalig in die Config ein:
 
-**Claude Desktop** (`%APPDATA%\Claude\claude_desktop_config.json` auf Windows):
+### Claude Desktop
+
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 ```json
 {
   "mcpServers": {
@@ -61,7 +70,9 @@ Wenn alles klappt, siehst du:
 
 Dann Claude Desktop neu starten — der Server läuft im Hintergrund sobald du eine Konversation öffnest.
 
-**Claude Code** (im Projektordner `.claude/mcp.json`):
+### Claude Code
+
+Im Projektordner `.claude/mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -73,7 +84,7 @@ Dann Claude Desktop neu starten — der Server läuft im Hintergrund sobald du e
 }
 ```
 
-**Cline** (VS Code Extension):
+### Cline (VS Code Extension)
 
 In VS Code öffne die Cline Settings (Cline-Symbol → Settings) und gehe zu "MCP Server Configuration". Dort ergänze:
 
@@ -96,7 +107,7 @@ In VS Code öffne die Cline Settings (Cline-Symbol → Settings) und gehe zu "MC
       "type": "stdio",
       "command": "node",
       "args": [
-        "<path/to/abap-mcp-server>/dist/index.js"
+        "/pfad/zum/abap-mcp-server/dist/index.js"
       ],
       "env": {
         "SAP_URL": "https://<SAP_SYSTEM>:<PORT>",
@@ -129,6 +140,44 @@ Nach dem Speichern: Cline neu starten oder die MCP-Verbindung neu laden.
 
 ---
 
+## Credentials konfigurieren
+
+Der Server lädt die Credentials aus der `.env`-Datei im Projekt:
+
+```bash
+# Pflicht
+SAP_URL=https://<SAP_SYSTEM>:<PORT>
+SAP_USER=<USERNAME>
+SAP_PASSWORD=<PASSWORD>
+SAP_CLIENT=<CLIENT>
+SAP_LANGUAGE=EN
+
+# Sicherheit (alle default-safe)
+ALLOW_WRITE=false
+ALLOW_DELETE=false
+ALLOW_EXECUTE=false
+BLOCKED_PACKAGES=SAP,SHD,SMOD
+
+# Optionen
+SYNTAX_CHECK_BEFORE_ACTIVATE=true
+DEFER_TOOLS=true
+SAP_ABAP_VERSION=latest
+DEFAULT_TRANSPORT=
+MAX_DUMPS=20
+```
+
+Du brauchst die Credentials **nicht** in der MCP-Config zu wiederholen — der Server lädt sie automatisch beim Start.
+
+**Empfohlene Einstellungen pro Umgebung:**
+
+| Variable | DEV | QAS/TEST | PROD |
+|---|---|---|---|
+| `ALLOW_WRITE` | `true` | `false` | `false` |
+| `ALLOW_DELETE` | `false` | `false` | `false` |
+| `ALLOW_EXECUTE` | `true` | `false` | `false` |
+
+---
+
 ## Warum braucht der Server keinen Port?
 
 Der ABAP MCP Server läuft im **stdio-Modus** (Standard Input/Output), nicht im HTTP-Modus:
@@ -149,21 +198,6 @@ Der ABAP MCP Server läuft im **stdio-Modus** (Standard Input/Output), nicht im 
 
 ---
 
-## Credentials konfigurieren
-
-Der Server lädt die Credentials aus der `.env`-Datei im Projekt:
-
-```bash
-SAP_URL=https://<SAP_SYSTEM>:<PORT>
-SAP_USER=<USERNAME>
-SAP_PASSWORD=<PASSWORD>
-SAP_CLIENT=<CLIENT>
-SAP_LANGUAGE=<LANGUAGE>
-ALLOW_WRITE=<true|false>
-```
-
-Du brauchst die Credentials **nicht** in der MCP-Config zu wiederholen — der Server lädt sie automatisch beim Start.
-
 ## Troubleshooting
 
 **"ADT Fehler: User ist currently editing..."**
@@ -174,3 +208,14 @@ Du brauchst die Credentials **nicht** in der MCP-Config zu wiederholen — der S
 - Includes können nicht standalone aktiviert werden
 - Der Server erkennt das automatisch und aktiviert die Include im Kontext des Hauptprogramms
 - Falls nötig, `mainProgram`-Parameter beim Schreiben angeben
+
+**"SAP_URL, SAP_USER and SAP_PASSWORD must be set"**
+- `.env`-Datei fehlt oder Server wurde aus dem falschen Verzeichnis gestartet
+- Bei Cline: `cwd`-Feld in der MCP-Config prüfen
+
+**Connection refused**
+- VPN aktiv? SAP-System erreichbar? URL korrekt?
+
+**Self-signed Zertifikat (nur DEV)**
+- In der `.env` oder MCP-Config `env` setzen: `NODE_TLS_REJECT_UNAUTHORIZED=0`
+- Nur für Entwicklungssysteme mit Self-signed Zertifikaten!
