@@ -26,9 +26,12 @@ Wenn alles klappt, siehst du:
 ║   ABAP MCP Server v2.0 — Extended        ║
 ╚══════════════════════════════════════════╝
   System  : https://<SAP_SYSTEM>:<PORT>
-  User    : <USERNAME>  Client: <CLIENT>
+  User    : <USERNAME>  Client: <CLIENT>  Lang: EN
   Write   : ❌ deaktiviert
-  Tools   : 30 registriert
+  Delete  : ❌ deaktiviert
+  Tools   : 10 initial (49 gesamt, deferred)
+  Doku    : help.sap.com vlatest
+  Prompts : 1 (abap_develop)
   ADT     : ✅ Verbunden
 ✅ MCP Server läuft auf stdio — bereit für Verbindungen
 ```
@@ -78,17 +81,49 @@ In VS Code öffne die Cline Settings (Cline-Symbol → Settings) und gehe zu "MC
 {
   "mcpServers": {
     "abap": {
-      "command": "node",
-      "args": ["/pfad/zum/abap-mcp-server/dist/index.js"],
-      "cwd": "/pfad/zum/abap-mcp-server",
+      "autoApprove": [
+        "search_abap_objects",
+        "read_abap_source",
+        "get_object_info",
+        "where_used",
+        "write_abap_source",
+        "analyze_abap_context",
+        "find_tools",
+        "abap_develop"
+      ],
       "disabled": false,
-      "autoApprove": []
+      "timeout": 60,
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "<path/to/abap-mcp-server>/dist/index.js"
+      ],
+      "env": {
+        "SAP_URL": "https://<SAP_SYSTEM>:<PORT>",
+        "SAP_USER": "<USERNAME>",
+        "SAP_PASSWORD": "<PASSWORD>",
+        "SAP_CLIENT": "<CLIENT>",
+        "SAP_LANGUAGE": "EN",
+        "ALLOW_WRITE": "true",
+        "DEFAULT_TRANSPORT": "",
+        "ALLOW_EXECUTE": "true",
+        "BLOCKED_PACKAGES": "SAP,SHD,SMOD",
+        "SYNTAX_CHECK_BEFORE_ACTIVATE": "true",
+        "MAX_DUMPS": "20",
+        "DEFER_TOOLS": "true",
+        "SAP_ABAP_VERSION": "latest",
+        "NODE_TLS_REJECT_UNAUTHORIZED": "0"
+      }
     }
   }
 }
 ```
 
-**Wichtig:** Das `cwd`-Feld ist notwendig, damit der Server die `.env`-Datei aus dem richtigen Verzeichnis lädt. Ohne `cwd` schlägt der Start mit "SAP_URL, SAP_USER and SAP_PASSWORD must be set" fehl.
+**Hinweise:**
+- `autoApprove` listet die Tools auf, die ohne Benutzerbestätigung ausgeführt werden dürfen. Erweitere die Liste nach Bedarf (z.B. `search_abap_syntax`, `validate_ddic_references`).
+- `timeout`: Maximale Laufzeit pro Tool-Aufruf in Sekunden (60 empfohlen für ATC-Checks u.ä.).
+- `NODE_TLS_REJECT_UNAUTHORIZED=0`: Nur bei Self-signed Zertifikaten (DEV-Systeme) setzen!
+- Alle `env`-Variablen können alternativ in einer `.env`-Datei im Server-Verzeichnis konfiguriert werden.
 
 Nach dem Speichern: Cline neu starten oder die MCP-Verbindung neu laden.
 

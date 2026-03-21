@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 47 tools across 12 categories + 1 meta-tool (`find_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
+ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 47 tools across 12 categories + 2 meta-tools (`find_tools`, `list_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
 
 ## Build & Development Commands
 
@@ -33,8 +33,17 @@ npm run clean
 
 ## Architecture
 
-### Single-Entry Point Pattern
-- **Entry**: `src/index.ts` — monolithic server (no modularization needed at this scale)
+### Modular Architecture
+- **Entry**: `src/index.ts` — startup & banner
+- **Server**: `src/server.ts` — MCP request handlers (ListTools, CallTool, Prompts)
+- **Config**: `src/config.ts` — environment variable parsing
+- **Schemas**: `src/schemas.ts` — Zod parameter validation for all tools
+- **Tools**: `src/tools/` — tool definitions, registry, and handler dispatch map
+  - `tool-definitions.ts` — 47 tool metadata (name, description, schema)
+  - `tool-registry.ts` — categories, core tools, deferred loading
+  - `handler-map.ts` — dispatch map (tool name → handler function)
+  - `handlers/` — 13 handler modules (search, read, write, create, delete, test, quality, diagnostics, transport, abapgit, query, documentation, context, meta)
+- **Helpers**: `src/helpers/` — JSON schema conversion, DDIC validation, documentation fetching, Clean ABAP analysis
 - **Connection**: Lazy-initialized single `ADTClient` instance reused across all tool calls
 - **Transport**: stdio-based MCP protocol with `@modelcontextprotocol/sdk`
 
@@ -44,9 +53,9 @@ npm run clean
 - **Lock Recovery**: Automatic retry logic for stale locks (drops session, full logout/login if needed)
 
 ### Tool Architecture
-- **Schema Validation**: Zod for all tool parameters (30+ schemas defined inline)
+- **Schema Validation**: Zod for all tool parameters (30+ schemas in `src/schemas.ts`)
 - **Tool Groups**: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION
-- **Deferred Loading** (default): Only 9 core tools (`search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `find_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
+- **Deferred Loading** (default): Only 10 core tools (`search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `find_tools`, `list_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
 - **MCP Prompt** (`abap_develop`): Enforces a 6-step ABAP development workflow (context analysis → reference research → Clean ABAP → code placement → implementation → quality check)
 
 ### ADT Write Workflow (Critical Flow)
@@ -115,7 +124,7 @@ All tools use Zod schemas (defined near line 185). Schemas include descriptions 
 
 ## Important Context from Documentation
 
-- **47 Tools in 12 Groups + 1 Meta-Tool + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
+- **47 Tools in 12 Groups + 2 Meta-Tools + 1 Prompt**: Full lifecycle coverage (search → read → write → test → quality → deployment → documentation)
 - **ADT-Based**: Uses `/sap/bc/adt/*` endpoints (SICF must be active on SAP side)
 - **Write Safety**: Lock conflicts prevented by serial execution; syntax errors block activation; incomplete unlocks logged for manual recovery (SE03)
 - **Token Budget**: Default deferred mode targets ~75% reduction in tokens per `tools/list` call
