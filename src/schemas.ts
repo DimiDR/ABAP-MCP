@@ -228,6 +228,9 @@ export const S_GetTableContents = z.object({
   tableName: z.string().describe("Name of the DDIC table"),
   maxRows:   z.number().int().min(1).max(1000).default(100).optional().describe("Max. number of rows (default: 100)"),
 });
+export const S_GetTableFields = z.object({
+  tableName: z.string().describe("Name of the DDIC table (e.g. VBAK, MARA, BKPF)"),
+});
 
 // --- CONTEXT ANALYSIS ---
 export const S_AnalyzeContext = z.object({
@@ -274,16 +277,49 @@ export const S_SearchAbapSyntax = z.object({
   version: z.string().optional().describe("ABAP version (e.g. 'latest', '758', '754'). Default: cfg.sapAbapVersion"),
 });
 
+// --- BATCH ---
+export const S_BatchRead = z.object({
+  operations: z.array(z.object({
+    tool: z.string().describe(
+      "Tool name — any read-only tool: search_abap_objects, search_source_code, " +
+      "read_abap_source, get_object_info, where_used, get_code_completion, " +
+      "find_definition, get_revisions, get_ddic_element, get_table_contents, " +
+      "get_fix_proposals, get_inactive_objects, analyze_abap_context, " +
+      "run_select_query, get_short_dumps, get_short_dump_detail, get_traces, " +
+      "get_trace_detail, get_transport_info, get_transport_objects, " +
+      "get_abapgit_repos, run_syntax_check, run_atc_check, " +
+      "validate_ddic_references, review_clean_abap, " +
+      "get_abap_keyword_doc, get_abap_class_doc, get_module_best_practices, " +
+      "search_clean_abap, search_abap_syntax, search_sap_web"
+    ),
+    args: z.record(z.unknown()).describe("Arguments for the tool (same as calling the tool directly)"),
+    label: z.string().optional().describe("Optional label to identify this operation in the result"),
+  })).min(1).max(20).describe("List of operations to execute in parallel (1–20)"),
+});
+
+// --- WEB SEARCH ---
+export const S_SearchSapWeb = z.object({
+  query: z.string().describe(
+    "Search query — error message, topic, SAP Note number, or any SAP-related question " +
+    "(e.g. 'CX_SY_OPEN_SQL_DB error SELECT', 'ALV grid editable', 'SAP Note 2081285')"
+  ),
+  sources: z.array(z.enum(["help", "community", "notes"]))
+    .optional()
+    .describe("Which sources to search: 'help' (help.sap.com), 'community' (community.sap.com), 'notes' (me.sap.com). Default: all three."),
+  maxResults: z.number().int().min(1).max(10).default(5).optional()
+    .describe("Maximum results per source (1–10, default: 5)"),
+});
+
 // --- META TOOLS ---
 export const S_FindTools = z.object({
   query: z.string().optional().describe("Search pattern for tool names/descriptions"),
   category: z.string().optional().describe(
-    "Category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION"
+    "Category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION | WEBSEARCH"
   ),
   enable: z.boolean().optional().default(true).describe("Enable tools (default: true)"),
 });
 export const S_ListTools = z.object({
   category: z.string().optional().describe(
-    "Filter by category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION. Omit for all."
+    "Filter by category: SEARCH | READ | WRITE | CREATE | DELETE | TEST | QUALITY | DIAGNOSTICS | TRANSPORT | ABAPGIT | QUERY | DOCUMENTATION | WEBSEARCH. Omit for all."
   ),
 });

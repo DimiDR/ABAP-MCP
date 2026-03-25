@@ -29,6 +29,7 @@ export function getAbapDevelopPrompt(objectName: string, task: string) {
     • CALL FUNCTION (without exceptions) → TRY/CATCH with CX_* classes
     • WRITE / FORMAT → CL_SALV_TABLE or Web Dynpro / Fiori
 - Use \`search_abap_objects\` and \`where_used\` to find alternatives in the system.
+- Use \`search_sap_web(query=<topic>)\` to find SAP Notes, blog posts and community solutions for the specific topic.
 - When uncertain: search the SAP documentation (web search) for best practices.
 
 ### Step 3: Apply modern ABAP principles (Clean ABAP)
@@ -106,6 +107,7 @@ Follow these principles when coding:
 5. Only when \`validate_ddic_references\` reports ✅ → call \`write_abap_source\`.
 
 - For syntax/activation errors: analyze, fix, and retry. Only stop if the SAME error persists after 3 attempts. If DIFFERENT errors appear, keep iterating — progress is being made
+- If errors persist after multiple attempts: use \`search_sap_web(query=<error_message>)\` to search for the error — often SAP Notes or community posts have the fix.
 - After implementation run \`run_syntax_check\` and optionally \`run_unit_tests\`
 
 ### Step 6: Quality check

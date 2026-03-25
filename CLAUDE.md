@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 47 tools across 12 categories + 2 meta-tools (`find_tools`, `list_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
+ABAP MCP Server v2 is a standalone Model Context Protocol (MCP) server that enables AI assistants (Claude, Copilot, Cursor) to interact with SAP ABAP systems via the ADT REST API. It implements 50 tools across 14 categories + 2 meta-tools (`find_tools`, `list_tools`) + 1 MCP Prompt (`abap_develop`) for full ABAP development workflow support.
 
 ## Build & Development Commands
 
@@ -39,10 +39,10 @@ npm run clean
 - **Config**: `src/config.ts` — environment variable parsing
 - **Schemas**: `src/schemas.ts` — Zod parameter validation for all tools
 - **Tools**: `src/tools/` — tool definitions, registry, and handler dispatch map
-  - `tool-definitions.ts` — 47 tool metadata (name, description, schema)
+  - `tool-definitions.ts` — 50 tool metadata (name, description, schema)
   - `tool-registry.ts` — categories, core tools, deferred loading
   - `handler-map.ts` — dispatch map (tool name → handler function)
-  - `handlers/` — 14 handler modules (search, read, write, create, delete, test, quality, diagnostics, transport, abapgit, query, documentation, context, meta)
+  - `handlers/` — 16 handler modules (search, read, write, create, delete, test, quality, diagnostics, transport, abapgit, query, documentation, context, websearch, batch, meta)
 - **Helpers**: `src/helpers/` — JSON schema conversion, DDIC validation, documentation fetching, Clean ABAP analysis
 - **Connection**: Lazy-initialized single `ADTClient` instance reused across all tool calls
 - **Transport**: stdio-based MCP protocol with `@modelcontextprotocol/sdk`
@@ -54,8 +54,8 @@ npm run clean
 
 ### Tool Architecture
 - **Schema Validation**: Zod for all tool parameters (30+ schemas in `src/schemas.ts`)
-- **Tool Groups**: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION
-- **Deferred Loading** (default): Only 10 core tools (`search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `find_tools`, `list_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
+- **Tool Groups**: SEARCH, READ, WRITE, CREATE, DELETE, TEST, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION, WEBSEARCH, BATCH
+- **Deferred Loading** (default): Only 13 core tools (`search_abap_objects`, `search_source_code`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `batch_read`, `search_sap_web`, `find_tools`, `list_tools`) loaded initially; others activated on-demand via `find_tools` meta-tool (~75-80% token savings)
 - **MCP Prompt** (`abap_develop`): Enforces a 6-step ABAP development workflow (context analysis → reference research → Clean ABAP → code placement → implementation → quality check)
 
 ### ADT Write Workflow (Critical Flow)
@@ -148,6 +148,16 @@ The `DOCUMENTATION.md` file (German) contains comprehensive tool reference. Refe
 - Understanding tool parameter contracts
 - Troubleshooting system compatibility issues
 - Reviewing security/configuration recommendations
+
+## Documentation Maintenance
+
+When implementing new features or tools, **always update all three documentation files**:
+1. **`Updates.md`** — Add a dated entry with feature name, background, technical details, and changed files
+2. **`readme.md`** — Update tool counts and add relevant user-facing information
+3. **`DOCUMENTATION.md`** — Add full tool reference (parameters, examples, usage notes) in the appropriate section
+4. **`CLAUDE.md`** — Update tool counts, categories, and core tool lists if applicable
+
+This ensures documentation stays in sync with the implementation.
 
 ## Common Debugging
 

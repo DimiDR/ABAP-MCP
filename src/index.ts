@@ -34,6 +34,8 @@ async function main() {
     : `${ALL_TOOLS.length} registriert`;
   console.error(`  Tools   : ${tIcon}`);
   console.error(`  Doku    : help.sap.com v${cfg.sapAbapVersion}`);
+  const gIcon = cfg.tavilyApiKey ? "✅ aktiv" : "❌ nicht konfiguriert";
+  console.error(`  WebSrch : ${gIcon}`);
   console.error(`  Prompts : 1 (abap_develop)`);
 
   try {

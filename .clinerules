@@ -1,0 +1,40 @@
+# ABAP MCP Server — Cline Rules
+
+## ABAP Development Workflow
+
+When developing ABAP code (writing, modifying, creating objects), ALWAYS follow the `abap_develop` workflow:
+
+### Step 1: Gather context
+1. `search_abap_objects(query="<object_name>")` to find the ADT URL
+2. `analyze_abap_context(objectUrl=<url>, depth="deep")` to read ALL includes and references
+3. NEVER write code without reading the full context first!
+
+### Step 2: Research
+- Check for modern alternatives (e.g. REUSE_ALV_GRID_DISPLAY -> CL_SALV_TABLE)
+- Use `search_sap_web(query=<topic>)` to find SAP Notes, blogs and community solutions
+- Use `search_abap_objects` and `where_used` to find patterns in the system
+
+### Step 3: Clean ABAP
+- Run `review_clean_abap(source=<existing_code>)` on existing code before changes
+- Apply modern ABAP: inline declarations, string templates, ABAP SQL, CX_* exceptions, OOP
+
+### Step 4: DDIC validation (MANDATORY for DB tables)
+- For each table used: `get_object_info` to read exact field names
+- NEVER guess or invent field names!
+
+### Step 5: Implementation
+1. `search_abap_syntax(query=<statement>)` for each ABAP statement you plan to use
+2. `validate_ddic_references(source=<planned_code>)` before writing
+3. Only write when validation passes: `write_abap_source`
+4. On errors: fix and retry. Stop only if the SAME error persists after 3 attempts
+5. On persistent errors: `search_sap_web(query=<error_message>)` to find solutions
+
+### Step 6: Quality
+- `run_atc_check` — fix priority 1+2 findings
+
+## Important Rules
+- Full-line ABAP comments (`*`) MUST start in column 1 — no indentation!
+- Use `"` for indented comments
+- Use `execute_abap_snippet` for one-off system queries — never create persistent programs
+- Use `batch_read` to parallelize multiple read operations in a single call
+- When `search_sap_web` is available (TAVILY_API_KEY configured): use it to research error messages, SAP Notes and best practices

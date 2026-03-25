@@ -164,9 +164,25 @@ export const TOOLS: ToolDef[] = [
   { name: "get_inactive_objects",
     description: "Lists all inactive (not yet activated) objects of the current user.",
     schema: S.S_GetInactiveObjects },
+  { name: "get_table_fields",
+    description: "Returns the field catalog (columns) of a DDIC table: field name, ABAP type, description, key flag, and length. " +
+      "Use this to explore table structures before writing SELECT statements or validating field references. " +
+      "Works for transparent tables, views, and CDS entities.",
+    schema: S.S_GetTableFields },
   { name: "get_table_contents",
     description: "Reads table contents directly from a DDIC table. Returns data as JSON.",
     schema: S.S_GetTableContents },
+
+  // ── BATCH ─────────────────────────────────────────────────────────────
+  { name: "batch_read",
+    description: "Executes multiple read-only tool calls in a single MCP request — the server runs them in parallel (Promise.allSettled) " +
+      "and returns all results at once. Dramatically reduces round-trip latency for clients like Cline that execute tools sequentially.\n" +
+      "Each operation specifies a tool name and its arguments (same as calling the tool directly). " +
+      "Only read-only tools are allowed (no write/create/delete). Max 20 operations per batch.\n" +
+      "Example: batch_read({ operations: [ { tool: 'read_abap_source', args: { objectUrl: '...', includeRelated: true }, label: 'main' }, " +
+      "{ tool: 'where_used', args: { objectUrl: '...' }, label: 'usages' }, " +
+      "{ tool: 'get_object_info', args: { objectUrl: '...' }, label: 'info' } ] })",
+    schema: S.S_BatchRead },
 
   // ── CONTEXT ANALYSIS ──────────────────────────────────────────────────
   { name: "analyze_abap_context",
@@ -201,4 +217,12 @@ export const TOOLS: ToolDef[] = [
       "No SAP system connection required — pure static analysis. " +
       "Call on existing code before writing to understand current conventions.",
     schema: S.S_ReviewCleanAbap },
+
+  // ── WEBSEARCH ──────────────────────────────────────────────────────────
+  { name: "search_sap_web",
+    description: "Searches SAP Help (help.sap.com), SAP Community (community.sap.com) and SAP Notes (me.sap.com) via Tavily Search API. " +
+      "Returns compact results (title + URL + snippet) to minimize token usage. " +
+      "Use for: error messages, SAP Notes, best practices, blog posts, KBAs, migration guides. " +
+      "Requires TAVILY_API_KEY in .env.",
+    schema: S.S_SearchSapWeb },
 ];

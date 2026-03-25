@@ -40,7 +40,7 @@
 Der ABAP MCP Server ermöglicht KI-Assistenten (Claude, GitHub Copilot, Cursor usw.) direkten
 Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brücke.
 
-**47 Tools** in 12 Gruppen + 2 Meta-Tools + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
+**48 Tools** in 13 Gruppen + 2 Meta-Tools + 1 MCP Prompt decken den kompletten ABAP-Entwicklungsworkflow ab:
 
 | Gruppe | Anzahl Tools | Beschreibung |
 |--------|-------------|--------------|
@@ -56,10 +56,11 @@ Zugriff auf ein SAP ABAP-System über die ADT REST API — ohne VS Code als Brü
 | ABAPGIT | 2 | Repos auflisten, Pull ausführen |
 | QUERY | 3 | SELECT-Statements, inaktive Objekte, ABAP-Snippets ausführen |
 | DOCUMENTATION | 5 | ABAP-Keyword-Doku, Klassen-Doku, Modul-Best-Practices, Clean ABAP, ABAP-Syntax |
+| BATCH | 1 | Parallele Ausführung mehrerer Read-Only-Tools in einem MCP-Call |
 | META | 2 | Tool-Finder und Tool-Übersicht für dynamische Tool-Registrierung |
 | PROMPTS | 1 | `abap_develop` — Intelligenter ABAP-Entwicklungsworkflow |
 
-> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 10 Kern-Tools geladen.
+> **Token-Optimierung:** Mit `DEFER_TOOLS=true` (Default) werden initial nur 13 Kern-Tools geladen.
 > Weitere Tools werden on-demand über `find_tools` aktiviert — das spart ~75-80% Tokens pro `tools/list`-Aufruf.
 
 ---
@@ -147,7 +148,8 @@ cp .env.example .env
 | `MAX_DUMPS` | | `20` | Maximale Anzahl Short Dumps |
 | `SAP_ABAP_VERSION` | | `latest` | ABAP-Version für help.sap.com Dokumentation (z.B. `latest`, `758`, `754`) |
 | `SAP_ALLOW_UNAUTHORIZED` | | `false` | Self-signed SSL-Zertifikate akzeptieren (nur DEV!) |
-| `DEFER_TOOLS` | | `true` | Tool-Deferred-Modus: initial nur Kern-Tools laden |
+| `DEFER_TOOLS` | | `true` | Tool-Deferred-Modus: initial nur 13 Kern-Tools laden |
+| `TAVILY_API_KEY` | | — | Tavily Search API Key (für `search_sap_web`). Free: 1000/Monat |
 
 ### Beispiel .env (Entwicklungssystem)
 
@@ -228,7 +230,7 @@ MAX_DUMPS=50
 
 #### `find_tools`
 
-Findet und aktiviert ABAP-Tools nach Suchbegriff oder Kategorie. Wird nur im Deferred-Modus (`DEFER_TOOLS=true`) benötigt — dann werden initial nur Kern-Tools geladen und weitere Tools on-demand über dieses Meta-Tool aktiviert.
+Findet und aktiviert ABAP-Tools nach Suchbegriff oder Kategorie. Wird nur im Deferred-Modus (`DEFER_TOOLS=true`) benötigt — dann werden initial nur 13 Kern-Tools geladen und weitere Tools on-demand über dieses Meta-Tool aktiviert.
 
 **Parameter:**
 
@@ -250,7 +252,7 @@ Kategorieübersicht anzeigen
 → find_tools()
 ```
 
-**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `find_tools`, `list_tools`
+**Kern-Tools (immer verfügbar):** `search_abap_objects`, `read_abap_source`, `write_abap_source`, `get_object_info`, `where_used`, `analyze_abap_context`, `search_abap_syntax`, `validate_ddic_references`, `batch_read`, `find_tools`, `list_tools`
 
 ---
 
@@ -453,6 +455,26 @@ Liest detaillierte DDIC-Informationen für eine Tabelle, View, Datenelement oder
 Felder der Tabelle T001 anzeigen
 → get_ddic_element(path="T001")
 ```
+
+---
+
+#### `get_table_fields`
+
+Gibt den Feldkatalog (Spalten) einer DDIC-Tabelle zurück: Feldname, ABAP-Typ, Beschreibung, Key-Flag und Länge. Nutze dieses Tool, um Tabellenstrukturen zu erkunden, bevor du SELECT-Statements schreibst oder Feldreferenzen validierst. Funktioniert für transparente Tabellen, Views und CDS-Entities.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `tableName` | string | ✓ | Name der DDIC-Tabelle (z.B. VBAK, MARA, BKPF) |
+
+**Beispiel:**
+```
+Feldstruktur der Verkaufsbelege anzeigen
+→ get_table_fields(tableName="VBAK")
+```
+
+**Rückgabe:** Anzahl Felder, Anzahl Schlüsselfelder, Array mit Feld-Objekten (name, type, description, isKey, length, isKeyFigure).
 
 ---
 
@@ -819,7 +841,7 @@ Bei ungültigen Feldern:
   ❌ T001-ABKRS: Feld nicht gefunden (Tabelle hat 20 Felder)
 
 ⚠️ Diese Felder existieren nicht in der DDIC — korrigiere die Feldnamen bevor du write_abap_source aufrufst!
-💡 Tipp: Nutze get_ddic_element mit dem Tabellennamen um alle verfügbaren Felder zu sehen.
+💡 Tipp: Nutze get_table_fields mit dem Tabellennamen um alle verfügbaren Felder zu sehen.
 ```
 
 **Empfohlener Workflow:**
@@ -1261,10 +1283,10 @@ Ein MCP Prompt der einen strukturierten 6-Schritte-Workflow für ABAP-Entwicklun
 **Workflow-Schritte:**
 
 1. **Kontext erfassen** — `search_abap_objects` → `analyze_abap_context(depth="deep")` → vollständigen Report lesen
-2. **Referenzen recherchieren** — Veraltete Patterns erkennen, moderne Alternativen suchen (z.B. `REUSE_ALV_GRID_DISPLAY` → `CL_SALV_TABLE`)
+2. **Referenzen recherchieren** — Veraltete Patterns erkennen, moderne Alternativen suchen (z.B. `REUSE_ALV_GRID_DISPLAY` → `CL_SALV_TABLE`). Mit `search_sap_web` SAP Notes, Blogs und Community-Lösungen zum Thema finden
 3. **Clean ABAP anwenden** — Bestehenden Code mit `review_clean_abap` prüfen, Inline-Deklarationen, String Templates, funktionale Methoden, ABAP SQL, CX_*-Ausnahmen, OOP
 4. **Code-Platzierung** — Richtiges Include / richtige Methode anhand des Kontext-Reports bestimmen
-5. **Implementierung** — `write_abap_source` mit Retry bei Syntax-/Aktivierungsfehlern
+5. **Implementierung** — `write_abap_source` mit Retry bei Syntax-/Aktivierungsfehlern. Bei hartnäckigen Fehlern: `search_sap_web` mit der Fehlermeldung aufrufen
 6. **Qualitätsprüfung** — `run_atc_check`, Findings Priorität 1+2 beheben
 
 **Verwendung in MCP-Clients:**
@@ -1375,6 +1397,103 @@ Quellcode einer Einheit lesen/schreiben: URL + `/source/main`
 | `SSL error` | Self-signed Zertifikat | `NODE_TLS_REJECT_UNAUTHORIZED=0` setzen (nur DEV!) |
 | `codeCompletion is not a function` | Alte abap-adt-api Version | `npm update abap-adt-api` |
 | `dumpsList is not a function` | System zu alt (< NW 7.52) | Feature nicht verfügbar auf diesem System |
+
+---
+
+## WEBSEARCH — SAP Web-Suche
+
+### `search_sap_web`
+
+Durchsucht SAP Help, SAP Community und SAP Notes via Tavily Search API. Gibt kompakte Ergebnisse zurück (Titel + URL + Snippet), um den Token-Verbrauch minimal zu halten. Ideal für: Fehlermeldungen nachschlagen, SAP Notes finden, Community-Lösungen suchen, Best Practices recherchieren.
+
+**Voraussetzungen:** `TAVILY_API_KEY` muss in der `.env` gesetzt sein.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `query` | string | ✓ | Suchbegriff — Fehlermeldung, Thema, SAP Note-Nummer, SAP-Frage |
+| `sources` | string[] | | Quellen: `help` (help.sap.com), `community` (community.sap.com), `notes` (me.sap.com). Default: alle drei |
+| `maxResults` | number | | Max. Treffer pro Quelle (1–10, Default: 5) |
+
+**Beispiele:**
+```
+Fehlermeldung nachschlagen
+→ search_sap_web(query="CX_SY_OPEN_SQL_DB error SELECT")
+
+SAP Note suchen
+→ search_sap_web(query="SAP Note 2081285")
+
+Nur SAP Community durchsuchen
+→ search_sap_web(query="ALV grid editable", sources=["community"])
+
+Migrations-Guide suchen
+→ search_sap_web(query="S/4HANA migration BAPI_MATERIAL_SAVEDATA", sources=["help", "community"])
+```
+
+**Ergebnis-Format:** Pro Treffer werden Titel, URL und ein 2-Zeilen-Snippet zurückgegeben — das gesamte Ergebnis bleibt unter 500 Tokens.
+
+> **Hinweis:** Dieses Tool ist ein Kern-Tool und immer verfügbar (auch im Deferred-Modus).
+
+**Setup:**
+1. https://tavily.com/ → Sign up → API Key kopieren
+2. In `.env` eintragen:
+```
+TAVILY_API_KEY=tvly-...
+```
+
+**Kosten:** Free Tier: 1000 Searches/Monat. Danach Pay-as-you-go verfügbar.
+
+---
+
+## BATCH — Parallele Operationen
+
+### `batch_read`
+
+Führt mehrere Read-Only-Tool-Aufrufe in einem einzigen MCP-Request parallel aus. Der Server führt alle Operationen gleichzeitig via `Promise.allSettled()` aus und gibt die Ergebnisse gebündelt zurück.
+
+**Anwendungsfall:** MCP-Clients wie Cline führen Tool-Aufrufe sequenziell aus. Mit `batch_read` wird aus 5 sequenziellen Aufrufen ein einzelner paralleler Call — die Gesamtzeit entspricht dem langsamsten Einzelrequest statt der Summe aller Requests.
+
+**Parameter:**
+
+| Parameter | Typ | Pflicht | Beschreibung |
+|-----------|-----|---------|--------------|
+| `operations` | Array | Ja | Liste von 1–20 Operationen |
+| `operations[].tool` | String | Ja | Tool-Name (jedes Read-Only-Tool) |
+| `operations[].args` | Object | Ja | Argumente (identisch mit direktem Tool-Aufruf) |
+| `operations[].label` | String | Nein | Optionales Label zur Identifikation im Ergebnis |
+
+**Erlaubte Tools:** Alle Read-Only-Tools (SEARCH, READ, QUALITY, DIAGNOSTICS, TRANSPORT, ABAPGIT, QUERY, DOCUMENTATION). Nicht erlaubt: WRITE, CREATE, DELETE, META, `execute_abap_snippet`.
+
+**Beispiel:**
+```json
+batch_read({
+  operations: [
+    { tool: "read_abap_source", args: { objectUrl: "/sap/bc/adt/programs/programs/ztest", includeRelated: true }, label: "source" },
+    { tool: "where_used", args: { objectUrl: "/sap/bc/adt/programs/programs/ztest" }, label: "usages" },
+    { tool: "get_object_info", args: { objectUrl: "/sap/bc/adt/programs/programs/ztest" }, label: "info" }
+  ]
+})
+```
+
+**Ergebnis-Format:**
+```
+batch_read: 3 operations, 3 OK, 0 errors
+
+═══ source [OK] ═══
+[Quellcode...]
+
+═══ usages [OK] ═══
+[Where-Used-Ergebnisse...]
+
+═══ info [OK] ═══
+[Objektmetadaten...]
+```
+
+**Hinweise:**
+- Als **Kern-Tool** registriert — immer verfügbar, kein `find_tools` nötig
+- Fehlertoleranz: Einzelne fehlgeschlagene Operationen stoppen nicht den gesamten Batch
+- ADT hat keine native Batch-API — die Parallelisierung erfolgt im Node.js MCP Server
 
 ---
 

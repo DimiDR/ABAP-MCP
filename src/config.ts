@@ -22,6 +22,7 @@ export const cfg = {
   allowUnauthorized:       process.env.SAP_ALLOW_UNAUTHORIZED === "true",
   deferTools:              process.env.DEFER_TOOLS !== "false",
   sapAbapVersion:          process.env.SAP_ABAP_VERSION ?? "latest",
+  tavilyApiKey:            process.env.TAVILY_API_KEY ?? "",
 };
 
 if (!cfg.url || !cfg.user || !cfg.password) {

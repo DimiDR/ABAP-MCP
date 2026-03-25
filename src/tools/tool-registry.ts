@@ -9,8 +9,8 @@ import { S_FindTools, S_ListTools } from "../schemas.js";
 export const TOOL_CATEGORIES: Record<string, string[]> = {
   SEARCH:      ["search_abap_objects", "search_source_code"],
   READ:        ["read_abap_source", "get_object_info", "where_used", "get_code_completion",
-                "find_definition", "get_revisions", "get_ddic_element", "get_table_contents",
-                "get_fix_proposals", "analyze_abap_context"],
+                "find_definition", "get_revisions", "get_ddic_element", "get_table_fields",
+                "get_table_contents", "get_fix_proposals", "analyze_abap_context"],
   WRITE:       ["write_abap_source", "activate_abap_object", "mass_activate", "pretty_print"],
   CREATE:      ["create_abap_program", "create_abap_class", "create_abap_interface",
                 "create_function_group", "create_cds_view", "create_database_table",
@@ -23,12 +23,15 @@ export const TOOL_CATEGORIES: Record<string, string[]> = {
   ABAPGIT:     ["get_abapgit_repos", "abapgit_pull"],
   QUERY:       ["run_select_query", "get_inactive_objects", "execute_abap_snippet"],
   DOCUMENTATION: ["get_abap_keyword_doc", "get_abap_class_doc", "get_module_best_practices", "search_abap_syntax", "search_clean_abap"],
+  WEBSEARCH:   ["search_sap_web"],
+  BATCH:       ["batch_read"],
 };
 
 export const CORE_TOOL_NAMES = new Set([
   "find_tools",
   "list_tools",
   "search_abap_objects",
+  "search_source_code",       // full-text search across ABAP source — fundamental search capability
   "read_abap_source",
   "write_abap_source",
   "get_object_info",
@@ -36,6 +39,8 @@ export const CORE_TOOL_NAMES = new Set([
   "analyze_abap_context",
   "search_abap_syntax",       // mandatory in abap_develop Step 5.1
   "validate_ddic_references", // mandatory in abap_develop Step 5.3
+  "batch_read",              // performance: always available for parallel reads
+  "search_sap_web",          // web search for SAP Help, Community & Notes — used in abap_develop Steps 2 & 5
 ]);
 
 export const enabledTools = new Set<string>();
@@ -47,7 +52,7 @@ export const FIND_TOOLS_ENTRY = {
     "Categories: SEARCH, READ, WRITE, CREATE, DELETE, TEST, " +
     "QUALITY (syntax check, ATC, Clean ABAP review, DDIC validation), " +
     "DIAGNOSTICS (short dumps, traces), TRANSPORT, ABAPGIT, QUERY, " +
-    "DOCUMENTATION (ABAP syntax help). " +
+    "DOCUMENTATION (ABAP syntax help), WEBSEARCH (Google SAP web search), BATCH (parallel read operations). " +
     "Enabled tools become immediately available.",
   schema: S_FindTools,
 };
@@ -55,7 +60,7 @@ export const FIND_TOOLS_ENTRY = {
 export const LIST_TOOLS_ENTRY = {
   name: "list_tools",
   description:
-    "Returns a compact overview of ALL 47+ available tools with short descriptions, grouped by category. " +
+    "Returns a compact overview of ALL 50+ available tools with short descriptions, grouped by category. " +
     "Shows which tools are currently active (core/enabled) vs. deferred. " +
     "Use this to discover the right tool for a task. Unlike find_tools, this does NOT enable tools — it only lists them.",
   schema: S_ListTools,
@@ -71,6 +76,7 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
   find_definition:       "Navigate to the definition of a token in source",
   get_revisions:         "Version history of an object (date, author, transport)",
   get_ddic_element:      "DDIC info for table/view/data element/domain",
+  get_table_fields:      "Field catalog of a table (name, type, key, length, description)",
   get_table_contents:    "Read table contents directly as JSON",
   get_fix_proposals:     "Quick-fix proposals for a source position",
   analyze_abap_context:  "Deep context analysis: source + includes + references",
@@ -109,6 +115,8 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
   get_module_best_practices: "Module-specific SAP best practices (FI, MM, SD…)",
   search_clean_abap:     "Search Clean ABAP Styleguide for best practices",
   search_abap_syntax:    "Search ABAP syntax docs from help.sap.com",
+  search_sap_web:        "Web search across SAP Help, Community & Notes (Google CSE)",
+  batch_read:            "Execute multiple read-only tools in one parallel MCP call",
   find_tools:            "Find & enable deferred tools by category/query",
   list_tools:            "Compact overview of ALL available tools & status",
 };

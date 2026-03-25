@@ -10,8 +10,8 @@ import { handleSearchAbapObjects, handleSearchSourceCode } from "./handlers/sear
 import {
   handleReadAbapSource, handleGetObjectInfo, handleWhereUsed,
   handleGetCodeCompletion, handleFindDefinition, handleGetRevisions,
-  handleGetDdicElement, handleGetTableContents, handleGetFixProposals,
-  handleGetInactiveObjects,
+  handleGetDdicElement, handleGetTableFields, handleGetTableContents,
+  handleGetFixProposals, handleGetInactiveObjects,
 } from "./handlers/read.js";
 import {
   handleWriteAbapSource, handleActivateAbapObject,
@@ -42,6 +42,8 @@ import {
   handleGetModuleBestPractices, handleSearchCleanAbap, handleSearchAbapSyntax,
 } from "./handlers/documentation.js";
 import { handleAnalyzeAbapContext } from "./handlers/context.js";
+import { handleSearchSapWeb } from "./handlers/websearch.js";
+import { handleBatchRead } from "./handlers/batch.js";
 import { handleFindTools, handleListTools } from "./handlers/meta.js";
 
 // ── Dispatch map ────────────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ export const HANDLER_MAP: Map<string, ToolHandler> = new Map([
   ["find_definition",         handleFindDefinition],
   ["get_revisions",           handleGetRevisions],
   ["get_ddic_element",        handleGetDdicElement],
+  ["get_table_fields",        handleGetTableFields],
   ["get_table_contents",      handleGetTableContents],
   ["get_fix_proposals",       handleGetFixProposals],
   ["get_inactive_objects",    handleGetInactiveObjects],
@@ -119,6 +122,12 @@ export const HANDLER_MAP: Map<string, ToolHandler> = new Map([
 
   // CONTEXT
   ["analyze_abap_context",    handleAnalyzeAbapContext],
+
+  // WEBSEARCH
+  ["search_sap_web",          handleSearchSapWeb],
+
+  // BATCH
+  ["batch_read",              handleBatchRead],
 
   // META
   ["find_tools",              handleFindTools],

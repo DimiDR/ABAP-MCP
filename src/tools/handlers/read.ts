@@ -6,7 +6,7 @@
 
 import type { ADTClient } from "abap-adt-api";
 import type { ToolResult } from "../../types.js";
-import { S_ReadSource, S_ObjectInfo, S_WhereUsed, S_CodeCompletion, S_FindDefinition, S_GetRevisions, S_GetDdicElement, S_GetTableContents, S_FixProposals, S_GetInactiveObjects } from "../../schemas.js";
+import { S_ReadSource, S_ObjectInfo, S_WhereUsed, S_CodeCompletion, S_FindDefinition, S_GetRevisions, S_GetDdicElement, S_GetTableContents, S_GetTableFields, S_FixProposals, S_GetInactiveObjects } from "../../schemas.js";
 import { ADT_PROGRAM_INCLUDES } from "../../adt-endpoints.js";
 import { resolveMainProgram } from "../../helpers/resolve.js";
 
@@ -177,6 +177,24 @@ export async function handleGetDdicElement(client: ADTClient, args: Record<strin
   const p = S_GetDdicElement.parse(args);
   const res = await client.ddicElement(p.path);
   return ok(JSON.stringify(res, null, 2));
+}
+
+export async function handleGetTableFields(client: ADTClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const p = S_GetTableFields.parse(args);
+  const res = await client.tableContents(p.tableName, 1, false);
+  const fields = res.columns.map((c: any) => ({
+    name: c.name,
+    type: c.colType || c.type,
+    description: c.description,
+    isKey: c.keyAttribute,
+    length: c.length,
+    isKeyFigure: c.isKeyFigure,
+  }));
+  const keyFields = fields.filter((f: any) => f.isKey);
+  return ok(
+    `Table ${p.tableName}: ${fields.length} field(s), ${keyFields.length} key field(s)\n\n` +
+    JSON.stringify(fields, null, 2)
+  );
 }
 
 export async function handleGetTableContents(client: ADTClient, args: Record<string, unknown>): Promise<ToolResult> {
